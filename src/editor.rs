@@ -146,10 +146,19 @@ impl Default for EditParams {
 }
 
 impl EditParams {
-    /// Returns `true` when applying these params to any image would be a no-op.
-    /// Currently always false because presets can alter images even at "zero" sliders.
-    /// Kept as an extension point for future short-circuit optimisation.
-    pub fn is_identity(&self) -> bool { false }
+    /// Returns `true` when these params are the identity transform — no visible change.
+    /// Checks all continuous fields against zero and discrete fields against defaults.
+    /// Used by `apply_edits` to short-circuit pixel processing for unchanged images.
+    pub fn is_identity(&self) -> bool {
+        self.preset    == Preset::None  &&
+        self.rotation  == Rotation::R0  &&
+        !self.flip_h   && !self.flip_v  &&
+        (self.scale      - 1.0).abs() < 1e-4 &&
+        self.exposure.abs()   < 1e-4 && self.highlights.abs() < 1e-4 &&
+        self.shadows.abs()    < 1e-4 && self.brightness.abs() < 1e-4 &&
+        self.contrast.abs()   < 1e-4 && self.saturation.abs() < 1e-4 &&
+        self.vibrance.abs()   < 1e-4 && self.sharpen.abs()    < 1e-4
+    }
 }
 
 // ── Undo stack ────────────────────────────────────────────────────────────────
@@ -206,15 +215,6 @@ impl EditorState {
         self.dirty = true;
     }
 
-    /// Commit params without triggering pixel reprocessing — for live slider drag.
-    /// Call sync() later when the user pauses.
-    #[allow(dead_code)] // Reserved for live-drag optimisation (no re-encode during drag)
-    pub fn commit_no_sync(&mut self, p: EditParams) {
-        self.undo.push(p);
-        self.dirty = true;
-        // Do not set self.display — caller will call sync() after debounce
-    }
-
     /// Recompute `display` if dirty. Call once per redraw.
     #[allow(dead_code)]
     pub fn sync(&mut self, original: &DecodedImage) {
@@ -243,12 +243,14 @@ impl EditorState {
 pub fn apply_edits(src: &DecodedImage, params: &EditParams) -> DecodedImage {
     if params.is_identity() { return src.clone(); }
 
-    let mut out_w = src.width;
-    let mut out_h = src.height;
-
-    let frames: Vec<Frame> = src.frames.iter().map(|f| {
-        let (pixels, w, h) = process_frame(&f.pixels, src.width, src.height, params);
-        out_w = w; out_h = h;
+    // All frames have the same dimensions; geometry transforms affect both.
+    // Compute the output size from one frame and reuse it for all.
+    let (_, out_w, out_h) = process_frame(
+        &src.frames.first().map(|f| f.pixels.as_slice()).unwrap_or(&[]),
+        src.width, src.height, params,
+    );
+    let frames = src.frames.iter().map(|f| {
+        let (pixels, _, _) = process_frame(&f.pixels, src.width, src.height, params);
         Frame { pixels, delay_ms: f.delay_ms }
     }).collect();
 
@@ -266,7 +268,7 @@ fn process_frame(px: &[u8], w: u32, h: u32, p: &EditParams) -> (Vec<u8>, u32, u3
         scale_bilinear(&px, w, h, p.scale)
     } else { (px, w, h) };
     // 3–4. Tonal + colour + style
-    let pp = resolve_pipeline(p, &px, w, h);
+    let pp = resolve_pipeline(p, &px);
     let px = tonal_colour(&px, &pp);
     // 5. Sharpen
     let px = if pp.sharpen > 1e-4 { unsharp_mask(&px, w, h, pp.sharpen) } else { px };
@@ -284,7 +286,8 @@ struct PipelineParams {
     warm_analog: bool, cool_film: bool, soft_glow: bool,
 }
 
-fn resolve_pipeline(p: &EditParams, pixels: &[u8], _w: u32, _h: u32) -> PipelineParams {
+/// Resolve slider values + preset overrides into the flat PipelineParams the hot loop uses.
+fn resolve_pipeline(p: &EditParams, pixels: &[u8]) -> PipelineParams {
     /// Base pipeline from EditParams — all style flags off.
     fn base(p: &EditParams) -> PipelineParams {
         PipelineParams {
@@ -851,5 +854,27 @@ mod tests {
         let mut b = EditParams::default();
         b.preset = Preset::Moody;
         assert!(!crate::params_equal(&a, &b));
+    }
+
+    #[test]
+    fn default_params_are_identity() {
+        assert!(EditParams::default().is_identity(),
+            "default EditParams must be the identity transform");
+    }
+
+    #[test]
+    fn non_default_exposure_not_identity() {
+        let mut p = EditParams::default();
+        p.exposure = 0.5;
+        assert!(!p.is_identity());
+    }
+
+    #[test]
+    fn identity_short_circuits_apply_edits() {
+        // identity params must return the exact same pixel data (clone, not reprocess)
+        let src = solid(16, 16, 128, 64, 32);
+        let out = apply_edits(&src, &EditParams::default());
+        assert_eq!(src.frames[0].pixels, out.frames[0].pixels,
+            "identity edit must produce pixel-identical output");
     }
 }

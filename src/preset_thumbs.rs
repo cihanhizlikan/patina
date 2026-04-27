@@ -6,7 +6,7 @@
 //! and update `thumb_svg_for_index` below to return the matching slice.
 
 /// The placeholder SVG used for every preset tile.
-pub static PLACEHOLDER: &[u8] =
+pub(crate) static PLACEHOLDER: &[u8] =
     include_bytes!("assets/preset_placeholder.svg");
 
 /// Returns the SVG bytes to display for preset index `i`.

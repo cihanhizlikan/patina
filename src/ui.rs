@@ -169,8 +169,12 @@ impl Icons {
 
 pub struct ThumbCache { handles: Vec<Option<TextureHandle>> }
 
+impl Default for ThumbCache {
+    fn default() -> Self { Self { handles: vec![None; Preset::ALL.len()] } }
+}
+
 impl ThumbCache {
-    pub fn new() -> Self { Self { handles: vec![None; Preset::ALL.len()] } }
+    pub fn new() -> Self { Self::default() }
 
     /// Upload any not-yet-uploaded thumbnails. Safe to call every frame.
     pub fn upload(&mut self, ctx: &Context) {
@@ -274,41 +278,48 @@ pub fn draw_panel(
                     ui.set_width(t.rail_w);
                     ui.spacing_mut().item_spacing = Vec2::ZERO;
 
+                    let mut params_changed = false;
+
                     if section(ui, &t, icons, "PRESETS", &mut open_sections[0]) {
                         if let Some(new_preset) = draw_presets(ui, &t, params, thumbs, icons) {
                             p.preset = new_preset;
-                            action.new_params = Some(p.clone());
+                            params_changed = true;
                         }
                     }
 
                     if section(ui, &t, icons, "TRANSFORM", &mut open_sections[1]) {
+                        // draw_transform returns true when the scale slider changed;
+                        // rotation/flip set action flags directly and are handled separately.
                         if draw_transform(ui, &t, icons, &mut p, &mut action) {
-                            action.new_params = Some(p.clone());
+                            params_changed = true;
                         }
                     }
 
                     if section(ui, &t, icons, "TONE", &mut open_sections[2]) {
-                        if draw_sliders(ui, &t, &mut [
+                        params_changed |= draw_sliders(ui, &t, &mut [
                             SD::bipolar("Exposure",   &mut p.exposure,   -2.0..=2.0),
                             SD::bipolar("Highlights", &mut p.highlights, -1.0..=1.0),
                             SD::bipolar("Shadows",    &mut p.shadows,    -1.0..=1.0),
                             SD::bipolar("Brightness", &mut p.brightness, -1.0..=1.0),
                             SD::bipolar("Contrast",   &mut p.contrast,   -1.0..=1.0),
-                        ]) { action.new_params = Some(p.clone()); }
+                        ]);
                     }
 
                     if section(ui, &t, icons, "COLOR", &mut open_sections[3]) {
-                        if draw_sliders(ui, &t, &mut [
+                        params_changed |= draw_sliders(ui, &t, &mut [
                             SD::bipolar("Saturation", &mut p.saturation, -1.0..=1.0),
                             SD::bipolar("Vibrance",   &mut p.vibrance,   -1.0..=1.0),
-                        ]) { action.new_params = Some(p.clone()); }
+                        ]);
                     }
 
                     if section(ui, &t, icons, "DETAIL", &mut open_sections[4]) {
-                        if draw_sliders(ui, &t, &mut [
+                        params_changed |= draw_sliders(ui, &t, &mut [
                             SD::unipolar("Sharpen", &mut p.sharpen, 0.0..=1.0),
-                        ]) { action.new_params = Some(p.clone()); }
+                        ]);
                     }
+
+                    // Single clone: only after all sections have had a chance to mutate p.
+                    if params_changed { action.new_params = Some(p.clone()); }
 
                 });
 
@@ -528,20 +539,20 @@ fn section(ui: &mut Ui, t: &T, icons: &Icons, title: &str, open: &mut bool) -> b
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(avail_w, row_h), Sense::click());
     if resp.clicked() { *open = !*open; }
 
-    let p  = ui.painter();
+    let pt = ui.painter();
     let cy = rect.center().y;
 
     if resp.hovered() {
-        p.rect_filled(rect, Rounding::ZERO, Color32::from_white_alpha(5));
+        pt.rect_filled(rect, Rounding::ZERO, Color32::from_white_alpha(5));
     }
 
     // Spruce dot with halo
     let cx = rect.min.x + t.row_x + t.dot;
-    p.circle_filled(egui::pos2(cx, cy), t.dot * 0.83,
+    pt.circle_filled(egui::pos2(cx, cy), t.dot * 0.83,
         Color32::from_rgba_premultiplied(25, 47, 41, 41));
-    p.circle_filled(egui::pos2(cx, cy), t.dot * 0.50, ACCENT);
+    pt.circle_filled(egui::pos2(cx, cy), t.dot * 0.50, ACCENT);
 
-    p.text(egui::pos2(cx + t.dot * 1.5 + t.gap_t * 0.5, cy),
+    pt.text(egui::pos2(cx + t.dot * 1.5 + t.gap_t * 0.5, cy),
         egui::Align2::LEFT_CENTER,
         title, egui::FontId::proportional(t.text_sec), TEXT);
 
@@ -551,17 +562,17 @@ fn section(ui: &mut Ui, t: &T, icons: &Icons, title: &str, open: &mut bool) -> b
         egui::pos2(rect.max.x - t.row_x - t.icon, cy - t.icon * 0.5), ic_sz);
 
     if *open {
-        p.image(icons.chevron.id(), ic_rect,
+        pt.image(icons.chevron.id(), ic_rect,
             Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), DIM);
     } else {
         let xi = ic_rect.min.x + ic_sz.x * 0.3;
         let xo = ic_rect.max.x - ic_sz.x * 0.3;
         let mk = Stroke::new(1.5, DIM);
-        p.line_segment([egui::pos2(xi, ic_rect.min.y + ic_sz.y * 0.2), egui::pos2(xo, ic_rect.center().y)], mk);
-        p.line_segment([egui::pos2(xo, ic_rect.center().y), egui::pos2(xi, ic_rect.max.y - ic_sz.y * 0.2)], mk);
+        pt.line_segment([egui::pos2(xi, ic_rect.min.y + ic_sz.y * 0.2), egui::pos2(xo, ic_rect.center().y)], mk);
+        pt.line_segment([egui::pos2(xo, ic_rect.center().y), egui::pos2(xi, ic_rect.max.y - ic_sz.y * 0.2)], mk);
     }
 
-    p.hline(rect.x_range(), rect.min.y, Stroke::new(1.0, BORDER));
+    pt.hline(rect.x_range(), rect.min.y, Stroke::new(1.0, BORDER));
     *open
 }
 

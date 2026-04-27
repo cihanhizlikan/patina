@@ -480,6 +480,7 @@ impl App {
     }
 
     fn editor_params_mut(&mut self, f: impl FnOnce(&mut EditParams)) -> EditParams {
+        debug_assert!(self.in_editor(), "editor_params_mut called outside editor mode");
         let mut p = self.editor_state.as_ref()
             .map(|es| es.undo.current().clone())
             .unwrap_or_default();
@@ -546,18 +547,23 @@ impl App {
         if action.undo    { log!("[action] Undo");    self.editor_undo();          return; }
         if action.redo    { log!("[action] Redo");    self.editor_redo();          return; }
 
-        // Geometry actions: modify params, commit immediately.
-        let geometry_edit: Option<(&str, Box<dyn FnOnce(&mut EditParams)>)> =
-            if      action.reset_all { Some(("ResetAll", Box::new(|p| *p = EditParams::default()))) }
-            else if action.rot_cw    { Some(("RotCw",    Box::new(|p| p.rotation = p.rotation.cw()))) }
-            else if action.rot_ccw   { Some(("RotCcw",   Box::new(|p| p.rotation = p.rotation.ccw()))) }
-            else if action.flip_h    { Some(("FlipH",    Box::new(|p| p.flip_h = !p.flip_h))) }
-            else if action.flip_v    { Some(("FlipV",    Box::new(|p| p.flip_v = !p.flip_v))) }
-            else { None };
+        // Geometry actions: dispatch without heap allocation.
+        enum Geom { ResetAll, RotCw, RotCcw, FlipH, FlipV }
+        let geom = if      action.reset_all { Some(Geom::ResetAll) }
+            else if action.rot_cw           { Some(Geom::RotCw)    }
+            else if action.rot_ccw          { Some(Geom::RotCcw)   }
+            else if action.flip_h           { Some(Geom::FlipH)    }
+            else if action.flip_v           { Some(Geom::FlipV)    }
+            else                            { None                  };
 
-        if let Some((label, mutator)) = geometry_edit {
-            log!("[action] {label}");
-            let p = self.editor_params_mut(mutator);
+        if let Some(g) = geom {
+            let p = match g {
+                Geom::ResetAll => { log!("[action] ResetAll"); EditParams::default() }
+                Geom::RotCw  => { log!("[action] RotCw");  self.editor_params_mut(|p| p.rotation = p.rotation.cw())  }
+                Geom::RotCcw => { log!("[action] RotCcw"); self.editor_params_mut(|p| p.rotation = p.rotation.ccw()) }
+                Geom::FlipH  => { log!("[action] FlipH");  self.editor_params_mut(|p| p.flip_h = !p.flip_h)          }
+                Geom::FlipV  => { log!("[action] FlipV");  self.editor_params_mut(|p| p.flip_v = !p.flip_v)          }
+            };
             self.editor_commit_and_sync(p);
             return;
         }
@@ -1222,6 +1228,13 @@ fn draw_modal(ctx: &egui::Context, app: &mut App, icons: Option<&ui::Icons>) {
             .inner_margin(24.0))
         .show(ctx, |ui| {
             ui.set_width(340.0);
+            // Reset global style overrides so modal text renders at full opacity.
+            // apply_panel_style sets override_text_color and fg_stroke globally,
+            // which bleeds into Window widgets and makes them appear disabled.
+            ui.visuals_mut().override_text_color               = None;
+            ui.visuals_mut().widgets.noninteractive.fg_stroke.color = TEXT;
+            ui.visuals_mut().widgets.inactive.fg_stroke.color       = TEXT;
+
             let btn_row = |ui: &mut egui::Ui, f: &mut dyn FnMut(&mut egui::Ui)| {
                 ui.add_space(16.0);
                 ui.horizontal(|ui| { ui.spacing_mut().item_spacing.x = 8.0; f(ui); });
