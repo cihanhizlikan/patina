@@ -827,18 +827,21 @@ impl eframe::App for App {
                         .unwrap_or(1.0);
 
                     // Fit image to canvas, apply user scale.
+                    // fit_scale makes the image fill the canvas at scale=1.0.
+                    // At scale>1 the image would exceed canvas bounds — clamp with
+                    // a single ratio so aspect ratio is preserved.
                     let fit_scale = (canvas.width()  / it.width  as f32)
                         .min(canvas.height() / it.height as f32);
-                    let display_w = it.width  as f32 * fit_scale * scale;
-                    let display_h = it.height as f32 * fit_scale * scale;
+                    let raw_w = it.width  as f32 * fit_scale * scale;
+                    let raw_h = it.height as f32 * fit_scale * scale;
+                    // Single clamping factor keeps the aspect ratio intact.
+                    let clamp = (canvas.width() / raw_w).min(canvas.height() / raw_h).min(1.0);
+                    let display_w = raw_w * clamp;
+                    let display_h = raw_h * clamp;
 
-                    // Centre the image. When scale > 1 the image is larger than the
-                    // canvas; clamp so the image anchors at canvas.min rather than
-                    // extending off-screen to the left/top.
-                    let x = (canvas.min.x + (canvas.width()  - display_w) * 0.5)
-                        .max(canvas.min.x);
-                    let y = (canvas.min.y + (canvas.height() - display_h) * 0.5)
-                        .max(canvas.min.y);
+                    // Centre within canvas — clamped dims guarantee positive offsets.
+                    let x = canvas.min.x + (canvas.width()  - display_w) * 0.5;
+                    let y = canvas.min.y + (canvas.height() - display_h) * 0.5;
                     let img_rect = egui::Rect::from_min_size(
                         egui::pos2(x, y), egui::vec2(display_w, display_h));
 
@@ -1095,8 +1098,9 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
 
     use ui::{ACCENT, ACCENT_BG, BG, BORDER, BTN, DIM, TEXT};
 
-    // Dim overlay
-    ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("saveas_dim")))
+    // Dim overlay at Order::Middle — Window renders after it at the same order
+    // so the Window's content is painted on top of the dim layer.
+    ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("saveas_dim")))
         .rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(160));
 
     let mut confirm = false;
@@ -1113,6 +1117,12 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
             .inner_margin(24.0))
         .show(ctx, |ui| {
             ui.set_width(360.0);
+            // Restore full widget interactivity inside the modal —
+            // apply_panel_style sets override_text_color globally which
+            // can bleed into the Window's non-interactive elements.
+            ui.visuals_mut().override_text_color = None;
+            ui.visuals_mut().widgets.noninteractive.fg_stroke.color = TEXT;
+            ui.visuals_mut().widgets.inactive.fg_stroke.color       = TEXT;
 
             // Title
             ui.label(egui::RichText::new("Save As").color(TEXT).size(16.0).strong());
