@@ -37,6 +37,7 @@ rfd = "0.14"
 
 # ── Lossless JPEG transforms (rotate/flip without re-encoding) ────────────────
 mozjpeg = { version = "0.10", default-features = false, features = ["with_simd"] }
+rayon = "1.12.0"
 
 [build-dependencies]
 # winres kept for Windows icon embedding — platform-specific but harmless on others

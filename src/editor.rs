@@ -21,6 +21,8 @@
 //! Animated GIFs are edited frame-by-frame; every frame receives the same params.
 
 use crate::loader::{DecodedImage, Frame};
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use rayon::slice::{ParallelSlice, ParallelSliceMut};
 
 // ── Rotation ──────────────────────────────────────────────────────────────────
 
@@ -237,6 +239,16 @@ impl EditorState {
     }
 }
 
+// ── Public geometry helper (used by lossless JPEG path in main.rs) ───────────
+
+/// Apply rotation and flip to a raw RGBA pixel buffer.
+/// Returns (transformed_pixels, new_width, new_height).
+pub fn apply_rotation_flip_raw(px: &[u8], w: u32, h: u32, p: &EditParams) -> (Vec<u8>, u32, u32) {
+    let (px, w, h) = do_rotate(px, w, h, p.rotation);
+    let (px, w, h) = do_flip(&px, w, h, p.flip_h, p.flip_v);
+    (px, w, h)
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// Produce a new `DecodedImage` by applying `params` to every frame of `src`.
@@ -249,7 +261,9 @@ pub fn apply_edits(src: &DecodedImage, params: &EditParams) -> DecodedImage {
         &src.frames.first().map(|f| f.pixels.as_slice()).unwrap_or(&[]),
         src.width, src.height, params,
     );
-    let frames = src.frames.iter().map(|f| {
+    // Process frames in parallel — each frame is independent.
+    // For single-frame images this is ~zero overhead; for animated GIFs it uses all cores.
+    let frames = src.frames.par_iter().map(|f| {
         let (pixels, _, _) = process_frame(&f.pixels, src.width, src.height, params);
         Frame { pixels, delay_ms: f.delay_ms }
     }).collect();
@@ -432,15 +446,14 @@ fn tonal_colour(pixels: &[u8], p: &PipelineParams) -> Vec<u8> {
     let contrast_f    = if p.contrast >= 0.0 { 1.0 + p.contrast * 1.5 }
                         else                  { 1.0 + p.contrast * 0.75 };
 
+    // Clone into an output buffer and process pixels in parallel.
+    // Each RGBA pixel is independent so Rayon's par_chunks_exact is safe and fast.
     let mut out = pixels.to_vec();
-    let n = out.len() / 4;
-
-    for i in 0..n {
-        let b = i * 4;
-        let a = out[b + 3];
-        let mut r = out[b    ] as f32 / 255.0;
-        let mut g = out[b + 1] as f32 / 255.0;
-        let mut v = out[b + 2] as f32 / 255.0;
+    out.par_chunks_exact_mut(4).for_each(|px| {
+        let a       = px[3];
+        let mut r   = px[0] as f32 * (1.0 / 255.0);
+        let mut g   = px[1] as f32 * (1.0 / 255.0);
+        let mut v   = px[2] as f32 * (1.0 / 255.0);
 
         // ── Tonal adjustments ────────────────────────────────────────────────
         apply_exposure(&mut r, &mut g, &mut v, exposure_mult);
@@ -462,11 +475,11 @@ fn tonal_colour(pixels: &[u8], p: &PipelineParams) -> Vec<u8> {
         if p.cool_film    { apply_cool_film(   &mut r, &mut g, &mut v); }
         if p.soft_glow    { apply_soft_glow(   &mut r, &mut g, &mut v); }
 
-        out[b    ] = (r.clamp(0.0, 1.0) * 255.0).round() as u8;
-        out[b + 1] = (g.clamp(0.0, 1.0) * 255.0).round() as u8;
-        out[b + 2] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-        out[b + 3] = a;
-    }
+        px[0] = (r.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        px[1] = (g.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        px[2] = (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        px[3] = a;
+    });
     out
 }
 
@@ -656,14 +669,18 @@ fn scale_bilinear(px: &[u8], w: u32, h: u32, scale: f32) -> (Vec<u8>, u32, u32) 
 fn unsharp_mask(px: &[u8], w: u32, h: u32, amount: f32) -> Vec<u8> {
     let blurred = box_blur_3x3(px, w, h);
     let mut out = px.to_vec();
-    for i in 0..(w*h) as usize {
-        let b = i*4;
-        for c in 0..3 {
-            let o = px[b+c] as f32;
-            let bl = blurred[b+c] as f32;
-            out[b+c] = (o + amount*(o-bl)).clamp(0.0,255.0).round() as u8;
-        }
-    }
+    // Zip original, blurred, and output in parallel chunks of 4 (RGBA).
+    out.par_chunks_exact_mut(4)
+        .zip(px.par_chunks_exact(4))
+        .zip(blurred.par_chunks_exact(4))
+        .for_each(|((o, src), bl)| {
+            for c in 0..3 {
+                let orig = src[c] as f32;
+                let blur = bl[c]  as f32;
+                o[c] = (orig + amount * (orig - blur)).clamp(0.0, 255.0).round() as u8;
+            }
+            // alpha unchanged
+        });
     out
 }
 
@@ -696,6 +713,8 @@ fn box_blur_3x3(px: &[u8], w: u32, h: u32) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::loader::{DecodedImage, Frame};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use rayon::slice::{ParallelSlice, ParallelSliceMut};
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

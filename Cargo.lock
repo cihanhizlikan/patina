@@ -2830,6 +2830,7 @@ dependencies = [
  "jxl-oxide",
  "mozjpeg",
  "notify-debouncer-mini",
+ "rayon",
  "rfd",
  "winres",
 ]
