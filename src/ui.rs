@@ -768,15 +768,21 @@ fn draw_sliders(ui: &mut Ui, t: &T, defs: &mut [SD<'_>]) -> bool {
                     ui.painter().text(lr.left_center(), egui::Align2::LEFT_CENTER,
                         def.label, egui::FontId::proportional(t.text_sld), DIM);
 
-                    let mut slider = egui::Slider::new(def.value, def.range.clone())
+                    let slider = egui::Slider::new(def.value, def.range.clone())
                         .show_value(false).clamp_to_range(true);
-                    if def.bipolar { slider = slider.trailing_fill(false); }
                     let sr = ui.add(slider);
-                    // Double-click resets to default (midpoint of range for bipolar, start for unipolar).
-                    if sr.double_clicked() {
-                        let default = if def.bipolar { 0.0 }
-                            else { *def.range.start() };
-                        *def.value = default;
+
+                    // Double-click resets to default value.
+                    // We can't use sr.double_clicked() — egui Slider consumes
+                    // click events internally. Instead detect via raw pointer state.
+                    let double_clicked = ui.input(|i| {
+                        i.pointer.button_double_clicked(egui::PointerButton::Primary)
+                            && i.pointer.hover_pos()
+                                .map(|p| sr.rect.contains(p))
+                                .unwrap_or(false)
+                    });
+                    if double_clicked {
+                        *def.value = if def.bipolar { 0.0 } else { *def.range.start() };
                     }
 
                     let display = format_slider_value(*def.value, def.bipolar);

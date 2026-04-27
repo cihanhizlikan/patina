@@ -641,6 +641,9 @@ impl App {
         if self.deleting { return; }
         self.deleting = true;
 
+        // Always exit editor mode on delete — the file is going away.
+        if self.in_editor() { self.do_exit_editor(); }
+
         // Navigate away before deleting so display doesn't go blank.
         let next = self.navigator.next().filter(|p| p != &path)
             .or_else(|| self.navigator.prev().filter(|p| p != &path));
@@ -913,6 +916,7 @@ impl App {
             if key!(cs,   egui::Key::S)        { self.save_as_returning(ctx); }
             if key!(no,   egui::Key::E)        { self.exit_editor(false); }
             if key!(no,   egui::Key::Escape)   { self.exit_editor(false); }
+            if key!(no,   egui::Key::Delete)   { self.delete_current(); }
             if key!(no,   egui::Key::Q) {
                 if self.exit_editor(true) { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
             }
@@ -1213,7 +1217,9 @@ fn draw_modal(ctx: &egui::Context, app: &mut App, icons: Option<&ui::Icons>) {
     let Some(ref modal) = app.modal else { return };
     use ui::{BG, BORDER, DANGER, DIM, TEXT};
 
-    ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("modal_dim")))
+    // Dim overlay at Order::Background so the Window (Order::Middle) renders above it.
+    // Using Foreground here would paint over the Window, making it appear greyed out.
+    ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("modal_dim")))
         .rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(160));
 
     let mut close  = false;
