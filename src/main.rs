@@ -470,6 +470,11 @@ impl App {
         self.icon_cache            = None;
         self.edit_rx               = None;
         self.last_slider_change    = None;
+        // Force the GPU texture to be re-uploaded from current_image.
+        // The editor's async pipeline may have left a modified image in the
+        // texture slot — incrementing image_gen triggers a fresh upload from
+        // the unedited current_image on the next frame.
+        self.image_gen += 1;
     }
 
     fn editor_params_changed(&self) -> bool {
