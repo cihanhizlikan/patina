@@ -178,6 +178,8 @@ struct App {
     maximized:             bool,
     pre_maximize_size:     Option<egui::Vec2>,
     image_gen:             u64,
+    /// Set to true after the first image load so we only resize the window once.
+    has_shown_first_image: bool,
 
     // Editor
     editor_state:          Option<EditorState>,
@@ -192,6 +194,7 @@ struct App {
     last_slider_change:    Option<Instant>,
 
     // Modal & deferred actions
+    pending_fullscreen_toggle: bool, // deferred to update() where frame is accessible
     modal:                    Option<ModalDialog>,
     save_as_modal:            Option<SaveAsModal>,
     pending_error:            Option<String>,
@@ -221,7 +224,9 @@ impl App {
             fullscreen:            false,
             maximized:             false,
             pre_maximize_size:     None,
-            image_gen:             0,
+            image_gen:                 0,
+            has_shown_first_image:     false,
+            pending_fullscreen_toggle: false,
             editor_state:          None,
             initial_editor_params: None,
             editor_open_sections:  [true, true, false, false, false],
@@ -293,9 +298,8 @@ impl App {
         }
     }
 
-    fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
-        self.fullscreen = !self.fullscreen;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+    fn toggle_fullscreen(&mut self, _ctx: &egui::Context) {
+        self.pending_fullscreen_toggle = true;
     }
 
     // ── Editor lifecycle ──────────────────────────────────────────────────────
@@ -495,12 +499,18 @@ impl App {
                 Msg::Loaded { path, image, mode } => {
                     let (w, h) = (image.width, image.height);
                     self.apply_image(path, image, mode, ctx);
-                    dr.resize_to = Some((w, h));
+                    // Only resize window on the very first image launch,
+                    // not on navigate or drag-and-drop.
+                    if mode == OpenMode::FirstImage {
+                        dr.resize_to = Some((w, h));
+                    }
                 }
                 Msg::WrongExtension { path, image, mode, correct_ext } => {
                     let (w, h) = (image.width, image.height);
                     self.apply_image(path.clone(), image, mode, ctx);
-                    dr.resize_to    = Some((w, h));
+                    if mode == OpenMode::FirstImage {
+                        dr.resize_to = Some((w, h));
+                    }
                     dr.rename_offer = Some((path, correct_ext));
                 }
                 Msg::Unsupported { path, reason } => {
@@ -674,12 +684,24 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // ── Fullscreen toggle (must use frame, not ctx) ────────────────────
+        if self.pending_fullscreen_toggle {
+            self.pending_fullscreen_toggle = false;
+            self.fullscreen = !self.fullscreen;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+        }
+
         // ── Drain background messages ──────────────────────────────────────
         let dr = self.drain_messages(ctx);
+        // Only resize the window when opening the first image — never on navigation.
+        // Resizing on every navigate would shrink/jump the window on each scroll.
         if let Some((w, h)) = dr.resize_to {
-            let (cw, ch) = clamp_to_work_area(w, h, ctx);
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(cw as f32, ch as f32)));
-            if let Some(cmd) = egui::ViewportCommand::center_on_screen(ctx) { ctx.send_viewport_cmd(cmd); }
+            if !self.has_shown_first_image {
+                self.has_shown_first_image = true;
+                let (cw, ch) = clamp_to_work_area(w, h, ctx);
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(cw as f32, ch as f32)));
+                if let Some(cmd) = egui::ViewportCommand::center_on_screen(ctx) { ctx.send_viewport_cmd(cmd); }
+            }
         }
         if let Some(msg) = dr.error_msg {
             self.pending_error = Some(msg);
@@ -804,15 +826,19 @@ impl eframe::App for App {
                         .map(|es| es.undo.current().scale)
                         .unwrap_or(1.0);
 
-                    // Fit image to canvas, then apply user scale factor.
+                    // Fit image to canvas, apply user scale.
                     let fit_scale = (canvas.width()  / it.width  as f32)
                         .min(canvas.height() / it.height as f32);
                     let display_w = it.width  as f32 * fit_scale * scale;
                     let display_h = it.height as f32 * fit_scale * scale;
 
-                    // Centre within the canvas.
-                    let x = canvas.min.x + (canvas.width()  - display_w) * 0.5;
-                    let y = canvas.min.y + (canvas.height() - display_h) * 0.5;
+                    // Centre the image. When scale > 1 the image is larger than the
+                    // canvas; clamp so the image anchors at canvas.min rather than
+                    // extending off-screen to the left/top.
+                    let x = (canvas.min.x + (canvas.width()  - display_w) * 0.5)
+                        .max(canvas.min.x);
+                    let y = (canvas.min.y + (canvas.height() - display_h) * 0.5)
+                        .max(canvas.min.y);
                     let img_rect = egui::Rect::from_min_size(
                         egui::pos2(x, y), egui::vec2(display_w, display_h));
 
@@ -830,10 +856,25 @@ impl eframe::App for App {
                     }
                 }
 
-                // Mouse wheel → navigate in viewer mode.
-                let scroll = ui.input(|i| i.raw_scroll_delta.y);
-                if scroll != 0.0 && !self.in_editor() {
-                    self.navigate(scroll < 0.0, ctx);
+                // Mouse wheel → navigate one image per discrete scroll event.
+                // Count actual scroll events (not accumulated pixel delta) to avoid
+                // a single wheel notch triggering multiple navigations.
+                let scroll_dir: Option<bool> = ui.input_mut(|i| {
+                    // Find the first scroll event and consume all of them.
+                    let first = i.events.iter().find_map(|ev| {
+                        if let egui::Event::Scroll(delta) = ev {
+                            if delta.y.abs() > delta.x.abs() && delta.y != 0.0 {
+                                return Some(delta.y < 0.0); // true = forward (next)
+                            }
+                        }
+                        None
+                    });
+                    // Consume all scroll events to prevent accumulation.
+                    i.events.retain(|ev| !matches!(ev, egui::Event::Scroll(_)));
+                    first
+                });
+                if let Some(forward) = scroll_dir {
+                    if !self.in_editor() { self.navigate(forward, ctx); }
                 }
 
                 // Drag-and-drop file onto canvas.
@@ -855,13 +896,44 @@ impl eframe::App for App {
         }
 
         // ── Keyboard shortcuts ─────────────────────────────────────────────
-        ctx.input(|i| {
-            for ev in &i.events {
-                if let egui::Event::Key { key, pressed: true, modifiers, .. } = ev {
-                    handle_key(self, *key, modifiers, ctx);
-                }
+        // Use consume_key() rather than reading i.events — egui marks key
+        // events as consumed for its own widget navigation before we see them.
+        // consume_key() bypasses the consumed flag and polls key state directly.
+        let no  = egui::Modifiers::NONE;
+        let ctrl = egui::Modifiers::COMMAND; // Ctrl on Win/Linux, Cmd on macOS
+
+        if self.in_editor() {
+            if ctx.input_mut(|i| i.consume_key(ctrl,                          egui::Key::Z)) { self.editor_undo(); }
+            if ctx.input_mut(|i| i.consume_key(ctrl | egui::Modifiers::SHIFT, egui::Key::Z)) { self.editor_redo(); }
+            if ctx.input_mut(|i| i.consume_key(ctrl,                          egui::Key::Y)) { self.editor_redo(); }
+            if ctx.input_mut(|i| i.consume_key(ctrl,                          egui::Key::S)) { self.save_inplace(ctx); }
+            if ctx.input_mut(|i| i.consume_key(ctrl | egui::Modifiers::SHIFT, egui::Key::S)) { self.save_as_returning(ctx); }
+            if ctx.input_mut(|i| i.consume_key(no,   egui::Key::E))       { self.exit_editor(false); }
+            if ctx.input_mut(|i| i.consume_key(no,   egui::Key::Escape))  { self.exit_editor(false); }
+            if ctx.input_mut(|i| i.consume_key(no,   egui::Key::Q)) {
+                if self.exit_editor(true) { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
             }
-        });
+        } else {
+            if ctx.input_mut(|i| i.consume_key(no, egui::Key::ArrowRight)) { self.navigate(true,  ctx); }
+            if ctx.input_mut(|i| i.consume_key(no, egui::Key::ArrowDown))  { self.navigate(true,  ctx); }
+            if ctx.input_mut(|i| i.consume_key(no, egui::Key::PageDown))   { self.navigate(true,  ctx); }
+            if ctx.input_mut(|i| i.consume_key(no, egui::Key::ArrowLeft))  { self.navigate(false, ctx); }
+            if ctx.input_mut(|i| i.consume_key(no, egui::Key::ArrowUp))    { self.navigate(false, ctx); }
+            if ctx.input_mut(|i| i.consume_key(no, egui::Key::PageUp))     { self.navigate(false, ctx); }
+            if ctx.input_mut(|i| i.consume_key(no, egui::Key::E)) {
+                self.enter_editor();
+                if self.thumb_cache.is_none() { self.thumb_cache = Some(ThumbCache::new()); }
+            }
+            if ctx.input_mut(|i| i.consume_key(no, egui::Key::F))   { self.toggle_fullscreen(ctx); }
+            if ctx.input_mut(|i| i.consume_key(no, egui::Key::F11)) { self.toggle_fullscreen(ctx); }
+            if ctx.input_mut(|i| i.consume_key(no, egui::Key::Escape)) {
+                if self.fullscreen { self.toggle_fullscreen(ctx); }
+            }
+            if ctx.input_mut(|i| i.consume_key(no, egui::Key::Delete)) { self.delete_current(); }
+            if ctx.input_mut(|i| i.consume_key(no, egui::Key::Q)) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
 
         // ── Schedule next animation frame ──────────────────────────────────
         if let Some(at) = self.next_frame_at {
@@ -946,10 +1018,82 @@ fn upload_image_texture(
 // ── Draw modal (unchanged from old main.rs, proxy → ctx) ─────────────────────
 
 /// Draw the custom Save As modal — filename field, format selector, directory browse.
+
+// ── Free-standing modal button painter ───────────────────────────────────────
+// Used by draw_save_as_modal. draw_modal uses its own identical nested version.
+
+#[derive(Clone, Copy)]
+enum ModalBtnKind { Primary, Default, Danger }
+
+fn modal_btn_free(
+    ui:      &mut egui::Ui,
+    label:   &str,
+    icon:    Option<&egui::TextureHandle>,
+    variant: ModalBtnKind,
+) -> egui::Response {
+    use egui::{Rounding, Sense, Stroke, Vec2};
+    use ui::{ACCENT, ACCENT_BG, BG as _BG, BORDER, BTN, ON_PRIMARY, TEXT,
+             DANGER, DANGER_BG, DANGER_BDR, DANGER_PR};
+    let _ = _BG;
+
+    const PAD: f32 = 12.0; const GAP: f32 = 6.0;
+    const ICON_SZ: f32 = 14.0; const FONT: f32 = 13.0;
+    const HEIGHT: f32 = 32.0; const RADIUS: f32 = 5.0;
+
+    let fg_measure = match variant { ModalBtnKind::Primary => ON_PRIMARY, _ => TEXT };
+    let ic_w  = if icon.is_some() { ICON_SZ + GAP } else { 0.0 };
+    let lbl_w = ui.fonts(|f| f.layout_no_wrap(
+        label.to_string(), egui::FontId::proportional(FONT), fg_measure).size().x);
+    let w = (PAD + ic_w + lbl_w + PAD).max(72.0);
+
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, HEIGHT), Sense::click());
+    let p    = ui.painter();
+    let r    = Rounding::same(RADIUS);
+    let down = resp.is_pointer_button_down_on();
+
+    let (bg, fg, border) = match variant {
+        ModalBtnKind::Primary => {
+            let bg = if down       { egui::Color32::from_rgb(0x7E, 0xA3, 0x95) }
+                else if resp.hovered() { egui::Color32::from_rgb(0x8D, 0xAF, 0xA0) }
+                else               { ACCENT };
+            (bg, ON_PRIMARY, None)
+        }
+        ModalBtnKind::Default => {
+            let (bg, fg, bdr) = if down {
+                (egui::Color32::from_rgba_premultiplied(35,68,59,56), ACCENT,
+                 egui::Color32::from_rgba_premultiplied(71, 86, 79, 115))
+            } else if resp.hovered() {
+                (ACCENT_BG, ACCENT, egui::Color32::from_rgba_premultiplied(71, 86, 79, 115))
+            } else { (BTN, TEXT, BORDER) };
+            (bg, fg, Some((1.0f32, bdr)))
+        }
+        ModalBtnKind::Danger => {
+            let (bg, fg, bdr) = if down { (DANGER_PR, DANGER, DANGER_BDR) }
+                else if resp.hovered() { (DANGER_BG, DANGER, DANGER_BDR) }
+                else                   { (BTN, TEXT, BORDER) };
+            (bg, fg, Some((1.0f32, bdr)))
+        }
+    };
+
+    p.rect_filled(rect, r, bg);
+    if let Some((w, c)) = border { p.rect_stroke(rect, r, Stroke::new(w, c)); }
+    let mut x = rect.min.x + PAD;
+    if let Some(tex) = icon {
+        let ir = egui::Rect::from_min_size(
+            egui::pos2(x, rect.center().y - ICON_SZ * 0.5), Vec2::splat(ICON_SZ));
+        p.image(tex.id(), ir,
+            egui::Rect::from_min_max(egui::pos2(0.,0.), egui::pos2(1.,1.)), fg);
+        x += ICON_SZ + GAP;
+    }
+    p.text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER,
+        label, egui::FontId::proportional(FONT), fg);
+    resp
+}
+
 fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
     let Some(ref mut modal) = app.save_as_modal else { return };
 
-    use ui::{ACCENT, ACCENT_BG, BG, BORDER, BTN, DIM, ON_PRIMARY, TEXT};
+    use ui::{ACCENT, ACCENT_BG, BG, BORDER, BTN, DIM, TEXT};
 
     // Dim overlay
     ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("saveas_dim")))
@@ -984,9 +1128,7 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
                 } else { dir_str.to_string() };
                 ui.label(egui::RichText::new(display).color(TEXT).size(12.0));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(egui::Button::new(
-                        egui::RichText::new("Browse…").size(12.0)).fill(BTN)
-                        .stroke(egui::Stroke::new(1.0, BORDER))).clicked()
+                    if modal_btn_free(ui, "Browse…", None, ModalBtnKind::Default).clicked()
                     { browse = true; }
                 });
             });
@@ -1041,21 +1183,10 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
             // Action buttons
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                // Save — primary
-                let save_lbl = egui::RichText::new("Save").color(ON_PRIMARY).size(13.0);
-                let save_btn = egui::Button::new(save_lbl).fill(ACCENT)
-                    .stroke(egui::Stroke::NONE)
-                    .rounding(egui::Rounding::same(5.0))
-                    .min_size(egui::vec2(72.0, 32.0));
-                if ui.add(save_btn).clicked() { confirm = true; }
+                // Save — primary (custom painted, same as other modal primary buttons)
+                if modal_btn_free(ui, "Save", None, ModalBtnKind::Primary).clicked()  { confirm = true; }
                 // Cancel — default
-                let cancel_btn = egui::Button::new(
-                    egui::RichText::new("Cancel").color(TEXT).size(13.0))
-                    .fill(BTN)
-                    .stroke(egui::Stroke::new(1.0, BORDER))
-                    .rounding(egui::Rounding::same(5.0))
-                    .min_size(egui::vec2(72.0, 32.0));
-                if ui.add(cancel_btn).clicked() { cancel = true; }
+                if modal_btn_free(ui, "Cancel", None, ModalBtnKind::Default).clicked() { cancel = true; }
             });
         });
 
@@ -1427,14 +1558,17 @@ fn handle_key(app: &mut App, key: egui::Key, mods: &egui::Modifiers, ctx: &egui:
 
     match (ctrl, shift, key) {
         (false, false, egui::Key::ArrowRight) |
+        (false, false, egui::Key::ArrowDown)  |
         (false, false, egui::Key::PageDown)   => { app.navigate(true,  ctx); }
         (false, false, egui::Key::ArrowLeft)  |
+        (false, false, egui::Key::ArrowUp)    |
         (false, false, egui::Key::PageUp)     => { app.navigate(false, ctx); }
         (false, false, egui::Key::E)          => {
             app.enter_editor();
             if app.thumb_cache.is_none() { app.thumb_cache = Some(ThumbCache::new()); }
         }
-        (false, false, egui::Key::F)          => { app.toggle_fullscreen(ctx); }
+        (false, false, egui::Key::F) |
+        (false, false, egui::Key::F11)        => { app.toggle_fullscreen(ctx); }
         (false, false, egui::Key::Escape)     => {
             if app.fullscreen { app.toggle_fullscreen(ctx); }
         }
