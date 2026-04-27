@@ -217,6 +217,8 @@ pub fn apply_panel_style(ctx: &Context) {
     style.visuals.widgets.active.bg_fill     = ACCENT_PRESS;
     style.visuals.widgets.active.bg_stroke   = Stroke::new(1.0, ACCENT);
     style.visuals.slider_trailing_fill       = true;
+    style.visuals.selection.bg_fill          = ACCENT; // slider filled track
+    style.visuals.selection.stroke           = egui::Stroke::new(1.0, ACCENT);
     // Scrollbar
     style.spacing.scroll.bar_width         = 8.0;
     style.spacing.scroll.handle_min_length = 24.0;
@@ -308,8 +310,10 @@ pub fn draw_panel(
                         ]) { action.new_params = Some(p.clone()); }
                     }
 
-                    footer_hint(ui, &t);
                 });
+
+            // Footer pinned below the scroll area, always visible.
+            footer_hint(ui, &t);
         });
 
     action
@@ -756,7 +760,13 @@ fn draw_sliders(ui: &mut Ui, t: &T, defs: &mut [SD<'_>]) -> bool {
                     let mut slider = egui::Slider::new(def.value, def.range.clone())
                         .show_value(false).clamp_to_range(true);
                     if def.bipolar { slider = slider.trailing_fill(false); }
-                    ui.add(slider);
+                    let sr = ui.add(slider);
+                    // Double-click resets to default (midpoint of range for bipolar, start for unipolar).
+                    if sr.double_clicked() {
+                        let default = if def.bipolar { 0.0 }
+                            else { *def.range.start() };
+                        *def.value = default;
+                    }
 
                     let display = format_slider_value(*def.value, def.bipolar);
                     let (_, vr) = ui.allocate_space(Vec2::new(t.sval_w, t.slider_h));
