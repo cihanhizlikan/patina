@@ -1,0 +1,52 @@
+[package]
+name = "patina"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "Patina"
+path = "src/main.rs"
+
+[dependencies]
+# ── UI & windowing (eframe bundles egui + winit + wgpu internally) ────────────
+eframe = { version = "0.27", default-features = false, features = [
+    "wgpu",          # wgpu backend for maximum GPU performance
+    "accesskit",     # accessibility support
+    "default_fonts", # egui's built-in font as fallback
+] }
+egui         = "0.27"
+egui_extras  = { version = "0.27", features = ["svg"] }
+
+# ── Image decoding ────────────────────────────────────────────────────────────
+image = { version = "0.25", default-features = false, features = [
+    "bmp", "png", "jpeg", "gif", "webp", "tiff", "ico",
+] }
+jxl-oxide = { version = "0.10" }
+
+# ── Error handling ────────────────────────────────────────────────────────────
+anyhow = "1"
+
+# ── Filesystem watching ───────────────────────────────────────────────────────
+notify-debouncer-mini = { version = "0.4", default-features = false }
+
+# ── Threading ─────────────────────────────────────────────────────────────────
+crossbeam-channel = "0.5"
+
+# ── Cross-platform file dialogs ───────────────────────────────────────────────
+rfd = "0.14"
+
+# ── Lossless JPEG transforms (rotate/flip without re-encoding) ────────────────
+mozjpeg = { version = "0.10", default-features = false, features = ["with_simd"] }
+
+[build-dependencies]
+# winres kept for Windows icon embedding — platform-specific but harmless on others
+winres = "0.1"
+
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+strip         = true
+
+[profile.dev]
+opt-level = 1
