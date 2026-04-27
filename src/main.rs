@@ -863,6 +863,12 @@ impl App {
         let scale    = self.editor_state.as_ref()
             .map(|es| es.undo.current().scale).unwrap_or(1.0);
 
+        // Allocate the full canvas for click sense BEFORE painting.
+        // Allocating after paint_at causes input/layout ordering issues that
+        // make double-clicks unreliable. The full canvas rect is used so
+        // double-clicking anywhere on the dark border also triggers maximize.
+        let canvas_resp = ui.allocate_rect(canvas, egui::Sense::click());
+
         // Scale image to fill canvas, then apply user zoom.
         // Clamp with a single ratio factor to preserve aspect ratio.
         let fit   = (canvas.width() / it.width as f32).min(canvas.height() / it.height as f32);
@@ -886,8 +892,7 @@ impl App {
         .fit_to_exact_size(egui::vec2(dw, dh))
         .paint_at(ui, img_rect);
 
-        let resp = ui.allocate_rect(img_rect, egui::Sense::click());
-        if resp.double_clicked() { self.toggle_maximize(ui.ctx()); }
+        if canvas_resp.double_clicked() { self.toggle_maximize(ui.ctx()); }
     }
 
     fn handle_canvas_scroll(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
