@@ -335,8 +335,6 @@ pub fn draw_panel(
 
                 });
 
-            // Footer pinned below the scroll area, always visible.
-            footer_hint(ui, &t);
         });
 
     action
@@ -821,21 +819,6 @@ fn format_slider_value(value: f32, bipolar: bool) -> String {
 }
 
 // ── Footer hint ───────────────────────────────────────────────────────────────
-
-fn footer_hint(ui: &mut Ui, t: &T) {
-    ui.add_space(t.gap);
-    hairline(ui);
-    Frame::none()
-        .inner_margin(Margin::symmetric(t.row_x, t.row_y))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Dbl-click slider: reset").color(FAINT).size(t.text_sld - 1.0));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new("[E] toggle").color(FAINT).size(t.text_sld - 1.0));
-                });
-            });
-        });
-}
 
 // ── EXIF / IPTC panel ─────────────────────────────────────────────────────────
 

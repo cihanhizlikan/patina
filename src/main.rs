@@ -31,6 +31,7 @@ mod editor;
 mod ui;
 mod preset_thumbs;
 mod exif;
+mod xmp;
 
 use std::{
     collections::HashMap,
@@ -46,6 +47,7 @@ use notify_debouncer_mini::{new_debouncer, Debouncer};
 use editor::{EditorState, EditParams, apply_edits};
 use ui::{draw_panel, ThumbCache, Icons, PanelAction};
 use exif::ImageMetadata;
+use xmp::{ImageLabels, ColourLabel};
 
 // ── Type aliases ──────────────────────────────────────────────────────────────
 
@@ -142,10 +144,50 @@ impl OutputFormat {
     }
 }
 
+/// State for the Save As modal dialog.
+/// Constructed via `App::default_save_as_modal()`; confirmed via `App::commit_save_as()`.
 struct SaveAsModal {
-    stem:      String,   // filename without extension
+    /// Filename without extension.
+    stem:      String,
     format:    OutputFormat,
     directory: PathBuf,
+    /// JPEG/WebP encode quality in [1, 100].
+    quality:   u8,
+    /// When set, the exported image is resized to fit within this square.
+    max_dim:   Option<u32>,
+    preset:    ExportPreset,
+}
+
+/// Built-in export presets with format, quality, and optional max dimension.
+/// Selecting a preset fills the SaveAsModal fields; editing any field switches to Custom.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum ExportPreset {
+    /// User-configured values — no automatic overrides.
+    #[default] Custom,
+    /// JPEG at quality 85, resized to fit within 2048×2048px.
+    Web,
+    /// PNG lossless, no resize — maximum fidelity for print reproduction.
+    Print,
+    /// WebP at quality 90, no resize — compact archival format.
+    Archive,
+}
+
+impl ExportPreset {
+    const ALL: &'static [(Self, &'static str)] = &[
+        (Self::Custom,  "Custom"),
+        (Self::Web,     "Web (JPEG 85%, ≤2048px)"),
+        (Self::Print,   "Print (PNG lossless)"),
+        (Self::Archive, "Archive (WebP 90%)"),
+    ];
+
+    fn apply(self, modal: &mut SaveAsModal) {
+        match self {
+            Self::Custom  => {}
+            Self::Web     => { modal.format = OutputFormat::Jpeg; modal.quality = 85; modal.max_dim = Some(2048); }
+            Self::Print   => { modal.format = OutputFormat::Png;  modal.quality = 100; modal.max_dim = None; }
+            Self::Archive => { modal.format = OutputFormat::WebP; modal.quality = 90;  modal.max_dim = None; }
+        }
+    }
 }
 
 impl SaveAsModal {
@@ -213,6 +255,8 @@ struct App {
     // ── Metadata ──────────────────────────────────────────────────────────────
     /// Cached EXIF/IPTC metadata for the current image.
     metadata:      Option<ImageMetadata>,
+    /// Star rating and colour label for the current image (XMP sidecar).
+    labels:        ImageLabels,
 
     // ── Editor ────────────────────────────────────────────────────────────────
     editor_state:          Option<EditorState>,
@@ -260,13 +304,14 @@ impl App {
             pre_maximize_size:        None,
             image_gen:                0,
             has_shown_first_image:    false,
-            slideshow_active:  false,
-            slideshow_next_at: None,
-            zoom:          1.0,
-            pan:           egui::Vec2::ZERO,
-            show_guides:   false,
-            guide_type:    GuideType::default(),
-            metadata:      None,
+            slideshow_active:          false,
+            slideshow_next_at:         None,
+            zoom:                      1.0,
+            pan:                       egui::Vec2::ZERO,
+            show_guides:               false,
+            guide_type:                GuideType::default(),
+            metadata:                  None,
+            labels:                    ImageLabels::default(),
             editor_state:             None,
             initial_editor_params:    None,
             editor_open_sections:     [true, true, false, false, false, false],
@@ -353,6 +398,10 @@ impl App {
         self.preload_neighbour(true,  ctx);
         self.preload_neighbour(false, ctx);
 
+        // Load XMP labels synchronously — tiny file, negligible I/O.
+        self.labels = self.current_path.as_deref()
+            .map(xmp::read_labels).unwrap_or_default();
+
         // Load EXIF asynchronously — never blocks navigation.
         let meta_path = path.clone();
         let tx_meta   = self.msg_tx.clone();
@@ -404,6 +453,7 @@ impl App {
         self.next_frame_at = None;
         self.image_gen    += 1;
         self.metadata      = None;
+        self.labels        = ImageLabels::default();
         self.zoom          = 1.0;
         self.pan           = egui::Vec2::ZERO;
     }
@@ -701,22 +751,26 @@ impl App {
     /// Opens the custom Save As modal; actual write happens on confirm.
     fn save_as_returning(&mut self, _ctx: &egui::Context) -> bool {
         if self.editor_state.is_none() { return false; }
-        let stem = self.current_path.as_deref()
-            .and_then(|p| p.file_stem())
-            .map(|s| format!("{}_edited", s.to_string_lossy()))
-            .unwrap_or_else(|| "edited".into());
-        let format    = self.current_path.as_deref()
-            .map(OutputFormat::from_path).unwrap_or(OutputFormat::Png);
-        let directory = self.current_path.as_deref()
-            .and_then(|p| p.parent()).unwrap_or(Path::new(".")).to_path_buf();
-        self.save_as_modal = Some(SaveAsModal { stem, format, directory });
+        self.save_as_modal = Some(self.default_save_as_modal());
         true
     }
 
-    fn commit_save_as(&mut self, ctx: &egui::Context, dest: PathBuf) {
+    fn default_save_as_modal(&self) -> SaveAsModal {
+        let path   = self.current_path.as_deref();
+        let stem   = path.and_then(|p| p.file_stem())
+            .map(|s| format!("{}_edited", s.to_string_lossy()))
+            .unwrap_or_else(|| "edited".into());
+        let format    = path.map(OutputFormat::from_path).unwrap_or(OutputFormat::Png);
+        let directory = path.and_then(|p| p.parent())
+            .unwrap_or(Path::new(".")).to_path_buf();
+        SaveAsModal { stem, format, directory, quality: 95, max_dim: None, preset: ExportPreset::Custom }
+    }
+
+    fn commit_save_as(&mut self, ctx: &egui::Context, dest: PathBuf,
+                       quality: u8, max_dim: Option<u32>) {
         let Some(es) = &self.editor_state else { return };
         let display  = es.display.clone();
-        if let Err(e) = save_image_to_path(&display, &dest, self.frame_index) {
+        if let Err(e) = save_image_to_path_opts(&display, &dest, self.frame_index, quality, max_dim) {
             self.pending_error = Some(format!("Save failed:\n{e}"));
             return;
         }
@@ -871,13 +925,16 @@ impl App {
         self.last_uploaded_frame = self.frame_index;
 
         // Clone pixels before the mutable borrow on image_texture.
+        // Clone pixels before the mutable borrow on image_texture.
+        // Pass canvas size so upload can pre-downsample for high-quality minification.
+        let canvas_size = ctx.screen_rect().size();
         let upload = self.view().map(|img| {
             let fd = img.frame(self.frame_index);
             (fd.pixels.clone(), img.width, img.height)
         });
         if let Some((pixels, w, h)) = upload {
             let t = Instant::now();
-            upload_image_texture(ctx, frame, &pixels, w, h, &mut self.image_texture);
+            upload_image_texture(ctx, frame, &pixels, w, h, canvas_size, &mut self.image_texture);
             let ms = t.elapsed().as_millis();
             if ms > 2 { log!("[upload] {}×{} {}ms", w, h, ms); }
         }
@@ -954,6 +1011,7 @@ impl App {
             .frame(egui::Frame::none().fill(CANVAS_COLOR))
             .show(ctx, |ui| {
                 self.draw_canvas_image(ui);
+                self.draw_label_overlay(ui);
                 self.handle_canvas_scroll(ui, ctx);
                 self.handle_canvas_drop(ui, ctx);
             });
@@ -982,7 +1040,18 @@ impl App {
         let cx = canvas.min.x + (canvas.width()  - dw) * 0.5;
         let cy = canvas.min.y + (canvas.height() - dh) * 0.5;
         let (ox, oy) = if self.in_editor() {
-            (cx + self.pan.x, cy + self.pan.y)
+            // Clamp pan so the image cannot be dragged entirely off the canvas.
+            // Allow panning up to (image_size - canvas_size) / 2 in each direction,
+            // so at least half the image is always visible.
+            let max_pan_x = ((dw - canvas.width())  * 0.5).max(0.0);
+            let max_pan_y = ((dh - canvas.height()) * 0.5).max(0.0);
+            let px = self.pan.x.clamp(-max_pan_x, max_pan_x);
+            let py = self.pan.y.clamp(-max_pan_y, max_pan_y);
+            // Also prevent panning into the right panel: cap ox so the image
+            // left edge never goes past canvas.max.x (the panel boundary).
+            let ox = (cx + px).min(canvas.max.x - 1.0);
+            let oy = cy + py;
+            (ox, oy)
         } else {
             (cx, cy)
         };
@@ -1038,6 +1107,41 @@ impl App {
         let dropped = ui.input(|i| i.raw.dropped_files.first().and_then(|f| f.path.clone()));
         if let Some(path) = dropped {
             if !self.in_editor() { self.open_image(path, OpenMode::Navigate, ctx); }
+        }
+    }
+
+    /// Draw star rating and colour label overlay in the bottom-left of the canvas.
+    fn draw_label_overlay(&self, ui: &mut egui::Ui) {
+        if self.labels.is_empty() { return; }
+        let canvas  = ui.available_rect_before_wrap();
+        let p       = ui.painter();
+        const PAD:     f32 = 10.0;
+        const STAR_SZ: f32 = 16.0;
+        const GAP:     f32 = 3.0;
+        let pad     = PAD;
+        let star_sz = STAR_SZ;
+        let gap     = GAP;
+
+        // Star rating
+        if self.labels.rating > 0 {
+            let base_x = canvas.min.x + pad;
+            let base_y = canvas.max.y - pad - star_sz;
+            for i in 0..self.labels.rating {
+                let cx = base_x + i as f32 * (star_sz + gap) + star_sz * 0.5;
+                let cy = base_y + star_sz * 0.5;
+                draw_star(p, egui::pos2(cx, cy), star_sz * 0.48, star_sz * 0.20,
+                    egui::Color32::from_rgb(0xF5, 0xC5, 0x30));
+            }
+        }
+
+        // Colour label dot
+        if self.labels.colour != ColourLabel::None {
+            let dot_r = 6.0;
+            let cx    = canvas.min.x + pad + dot_r;
+            let cy    = canvas.max.y - pad - star_sz - gap * 2.0 - dot_r;
+            p.circle_filled(egui::pos2(cx, cy), dot_r, self.labels.colour.color());
+            p.circle_stroke(egui::pos2(cx, cy), dot_r,
+                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(80)));
         }
     }
 
@@ -1108,6 +1212,32 @@ impl App {
             if key!(no, egui::Key::S)          { self.toggle_slideshow(ctx); }
             if key!(no, egui::Key::H)          { self.show_help = !self.show_help; }
             if key!(no, egui::Key::Delete)     { self.delete_current(); }
+            // Star rating: 1-5 sets rating, 0 clears
+            for (key, rating) in [
+                (egui::Key::Num1, 1u8), (egui::Key::Num2, 2), (egui::Key::Num3, 3),
+                (egui::Key::Num4, 4),   (egui::Key::Num5, 5), (egui::Key::Num0, 0),
+            ] {
+                if key!(no, key) {
+                    if let Some(path) = &self.current_path {
+                        self.labels.rating = rating;
+                        let _ = xmp::write_labels(path, &self.labels);
+                    }
+                }
+            }
+            // Colour label: L cycles through colours
+            if key!(no, egui::Key::L) {
+                if let Some(path) = &self.current_path {
+                    self.labels.colour = match self.labels.colour {
+                        ColourLabel::None   => ColourLabel::Red,
+                        ColourLabel::Red    => ColourLabel::Yellow,
+                        ColourLabel::Yellow => ColourLabel::Green,
+                        ColourLabel::Green  => ColourLabel::Blue,
+                        ColourLabel::Blue   => ColourLabel::Purple,
+                        ColourLabel::Purple => ColourLabel::None,
+                    };
+                    let _ = xmp::write_labels(path, &self.labels);
+                }
+            }
             if key!(no, egui::Key::Q)          { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
         }
     }
@@ -1186,7 +1316,7 @@ fn draw_help_modal(ctx: &egui::Context, in_editor: bool, show: &mut bool) {
             ui.add_space(12.0);
             ui.separator();
             ui.add_space(6.0);
-            ui.label(egui::RichText::new("Press H or Esc to close").color(DIM).size(11.0));
+            ui.label(egui::RichText::new("Double-click any slider to reset it to default  ·  H or Esc to close").color(DIM).size(11.0));
         });
 
     if ctx.input_mut(|i| {
@@ -1207,6 +1337,18 @@ fn draw_help_modal(ctx: &egui::Context, in_editor: bool, show: &mut bool) {
 // ── Guide overlays ────────────────────────────────────────────────────────────
 
 /// Draw composition guides (rule of thirds or golden ratio) over the image rect.
+/// Draw a 5-pointed star centred at `centre` with outer radius `r_out` and inner `r_in`.
+fn draw_star(p: &egui::Painter, centre: egui::Pos2, r_out: f32, r_in: f32, color: egui::Color32) {
+    use std::f32::consts::PI;
+    let mut pts = Vec::with_capacity(10);
+    for i in 0..10 {
+        let angle = PI * i as f32 / 5.0 - PI / 2.0;
+        let r     = if i % 2 == 0 { r_out } else { r_in };
+        pts.push(egui::pos2(centre.x + r * angle.cos(), centre.y + r * angle.sin()));
+    }
+    p.add(egui::Shape::convex_polygon(pts, color, egui::Stroke::NONE));
+}
+
 fn draw_guides(ui: &egui::Ui, r: egui::Rect, guide_type: GuideType) {
     const LINE_COLOR: egui::Color32 = egui::Color32::from_rgba_premultiplied(255, 255, 255, 60);
     const STROKE: egui::Stroke = egui::Stroke { width: 1.0, color: LINE_COLOR };
@@ -1229,6 +1371,30 @@ fn draw_guides(ui: &egui::Ui, r: egui::Rect, guide_type: GuideType) {
     }
 }
 
+/// Pre-downsample `pixels` with Lanczos3 when `canvas_sz` would display the image
+/// at less than 50% of its native size. Returns the (possibly resampled) buffer
+/// and the output dimensions. Caller owns the buffer.
+///
+/// This eliminates the aliasing that GPU bilinear filtering produces on large
+/// images shown at small display sizes. The 50% threshold and 2× oversampling
+/// margin balance quality against CPU cost.
+fn lanczos_if_needed(pixels: &[u8], w: u32, h: u32, canvas_sz: egui::Vec2) -> (Vec<u8>, u32, u32) {
+    let fit = (canvas_sz.x / w as f32).min(canvas_sz.y / h as f32);
+    if fit >= 0.5 { return (pixels.to_vec(), w, h); }
+
+    // Target: 2× the display size for a quality margin above 1:1.
+    let target_w = ((w as f32 * fit * 2.0) as u32).max(1);
+    let target_h = ((h as f32 * fit * 2.0) as u32).max(1);
+
+    let Some(buf) = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(w, h, pixels.to_vec())
+        else { return (pixels.to_vec(), w, h) };
+
+    let resized  = image::imageops::resize(&buf, target_w, target_h, image::imageops::FilterType::Lanczos3);
+    let (rw, rh) = resized.dimensions();
+    log!("[upload] Lanczos {}×{} → {}×{} (fit={:.2})", w, h, rw, rh, fit);
+    (resized.into_raw(), rw, rh)
+}
+
 fn image_copy(texture: &wgpu::Texture) -> wgpu::ImageCopyTexture<'_> {
     wgpu::ImageCopyTexture {
         texture, mip_level: 0,
@@ -1237,18 +1403,24 @@ fn image_copy(texture: &wgpu::Texture) -> wgpu::ImageCopyTexture<'_> {
 }
 
 fn upload_image_texture(
-    _ctx:   &egui::Context,
-    frame:  &mut eframe::Frame,
-    pixels: &[u8],
-    w:      u32,
-    h:      u32,
-    slot:   &mut Option<ImageTexture>,
+    _ctx:       &egui::Context,
+    frame:      &mut eframe::Frame,
+    pixels:     &[u8],
+    w:          u32,
+    h:          u32,
+    canvas_sz:  egui::Vec2,
+    slot:       &mut Option<ImageTexture>,
 ) {
     if w == 0 || h == 0 { return; }
     let Some(rs) = frame.wgpu_render_state() else {
         eprintln!("[upload] wgpu render state unavailable");
         return;
     };
+
+    // High-quality downscale: pre-resample with Lanczos3 when the image is displayed
+    // at <50% of native size, eliminating GPU linear-filter aliasing.
+    let (downsampled, w, h) = lanczos_if_needed(pixels, w, h, canvas_sz);
+    let pixels = downsampled.as_slice();
 
     let extent = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
     let layout = wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) };
@@ -1415,6 +1587,20 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
             });
             ui.add_space(12.0);
 
+            // Export preset selector
+            ui.label(egui::RichText::new("Preset").color(DIM).size(12.0));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                for &(preset, label) in ExportPreset::ALL {
+                    if format_btn(ui, label, modal.preset == preset).clicked() {
+                        modal.preset = preset;
+                        ExportPreset::apply(preset, modal);
+                    }
+                }
+            });
+            ui.add_space(12.0);
+
             // Format selector
             ui.label(egui::RichText::new("Format").color(DIM).size(12.0));
             ui.add_space(4.0);
@@ -1423,6 +1609,44 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
                 for &fmt in OutputFormat::ALL {
                     if format_btn(ui, fmt.label(), modal.format == fmt).clicked() {
                         modal.format = fmt;
+                        modal.preset = ExportPreset::Custom;
+                    }
+                }
+            });
+            ui.add_space(8.0);
+
+            // Quality slider (JPEG / WebP only)
+            if matches!(modal.format, OutputFormat::Jpeg | OutputFormat::WebP) {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Quality").color(DIM).size(12.0));
+                    ui.add_space(8.0);
+                    let mut q = modal.quality as f32;
+                    if ui.add(egui::Slider::new(&mut q, 1.0..=100.0)
+                        .show_value(true).clamp_to_range(true)).changed()
+                    {
+                        modal.quality = q as u8;
+                        modal.preset  = ExportPreset::Custom;
+                    }
+                });
+                ui.add_space(8.0);
+            }
+
+            // Max dimension (optional resize)
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Max size").color(DIM).size(12.0));
+                ui.add_space(8.0);
+                let mut enabled = modal.max_dim.is_some();
+                if ui.checkbox(&mut enabled, "").changed() {
+                    modal.max_dim = if enabled { Some(2048) } else { None };
+                    modal.preset  = ExportPreset::Custom;
+                }
+                if let Some(ref mut dim) = modal.max_dim {
+                    let mut d = *dim as f32;
+                    if ui.add(egui::Slider::new(&mut d, 256.0..=8192.0)
+                        .step_by(64.0).show_value(true).suffix("px")).changed()
+                    {
+                        *dim = d as u32;
+                        modal.preset = ExportPreset::Custom;
                     }
                 }
             });
@@ -1452,7 +1676,8 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
     if cancel  { app.save_as_modal = None; }
     if confirm {
         if let Some(m) = app.save_as_modal.take() {
-            app.commit_save_as(ctx, m.full_path());
+            let (q, d) = (m.quality, m.max_dim);
+            app.commit_save_as(ctx, m.full_path(), q, d);
         }
     }
 }
@@ -1789,17 +2014,46 @@ fn transform_rgb_pixels(
 }
 
 fn save_image_to_path(img: &DecodedImage, path: &Path, frame: usize) -> anyhow::Result<()> {
+    save_image_to_path_opts(img, path, frame, 95, None)
+}
+
+fn save_image_to_path_opts(
+    img:     &DecodedImage,
+    path:    &Path,
+    frame:   usize,
+    quality: u8,
+    max_dim: Option<u32>,
+) -> anyhow::Result<()> {
     use image::{ImageBuffer, Rgba, DynamicImage};
     let frame  = img.frame(frame);
     let rgba: ImageBuffer<Rgba<u8>, _> =
         ImageBuffer::from_raw(img.width, img.height, frame.pixels.clone())
             .ok_or_else(|| anyhow::anyhow!("pixel buffer size mismatch: {}×{}", img.width, img.height))?;
+
+    let dynamic = DynamicImage::ImageRgba8(rgba);
+
+    // Resize if a max dimension is specified and the image exceeds it.
+    let dynamic = if let Some(max) = max_dim {
+        if dynamic.width() > max || dynamic.height() > max {
+            dynamic.resize(max, max, image::imageops::FilterType::Lanczos3)
+        } else { dynamic }
+    } else { dynamic };
+
     let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
-    // JPEG and BMP have no alpha channel — convert to RGB before encoding.
-    if matches!(ext.as_deref(), Some("jpg") | Some("jpeg") | Some("bmp")) {
-        DynamicImage::ImageRgba8(rgba).to_rgb8().save(path)?;
-    } else {
-        rgba.save(path)?;
+    match ext.as_deref() {
+        Some("jpg") | Some("jpeg") => {
+            let rgb = dynamic.to_rgb8();
+            let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
+            let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality);
+            enc.encode_image(&rgb)?;
+        }
+        Some("webp") => {
+            // The `image` crate's WebP encoder is lossless-only; the quality field
+            // has no effect for WebP output. Lossy WebP requires the `webp` crate.
+            dynamic.to_rgba8().save(path)?;
+        }
+        Some("bmp") => { dynamic.to_rgb8().save(path)?; }
+        _ => { dynamic.save(path)?; }
     }
     Ok(())
 }
