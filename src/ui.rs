@@ -239,7 +239,8 @@ pub fn draw_panel(
     can_redo:      bool,
     thumbs:        &ThumbCache,
     icons:         &Icons,
-    open_sections: &mut [bool; 5],
+    open_sections: &mut [bool; 6],
+    metadata:      Option<&crate::exif::ImageMetadata>,
 ) -> PanelAction {
     let mut action = PanelAction::default();
     let mut p      = params.clone();
@@ -295,7 +296,11 @@ pub fn draw_panel(
                         }
                     }
 
-                    if section(ui, &t, icons, "TONE", &mut open_sections[2]) {
+                    if section(ui, &t, icons, "EXIF / IPTC", &mut open_sections[2]) {
+                        draw_exif_section(ui, &t, metadata);
+                    }
+
+                    if section(ui, &t, icons, "TONE", &mut open_sections[3]) {
                         params_changed |= draw_sliders(ui, &t, &mut [
                             SD::bipolar("Exposure",   &mut p.exposure,   -2.0..=2.0),
                             SD::bipolar("Highlights", &mut p.highlights, -1.0..=1.0),
@@ -305,14 +310,14 @@ pub fn draw_panel(
                         ]);
                     }
 
-                    if section(ui, &t, icons, "COLOR", &mut open_sections[3]) {
+                    if section(ui, &t, icons, "COLOR", &mut open_sections[4]) {
                         params_changed |= draw_sliders(ui, &t, &mut [
                             SD::bipolar("Saturation", &mut p.saturation, -1.0..=1.0),
                             SD::bipolar("Vibrance",   &mut p.vibrance,   -1.0..=1.0),
                         ]);
                     }
 
-                    if section(ui, &t, icons, "DETAIL", &mut open_sections[4]) {
+                    if section(ui, &t, icons, "DETAIL", &mut open_sections[5]) {
                         params_changed |= draw_sliders(ui, &t, &mut [
                             SD::unipolar("Sharpen", &mut p.sharpen, 0.0..=1.0),
                         ]);
@@ -818,5 +823,39 @@ fn footer_hint(ui: &mut Ui, t: &T) {
                     ui.label(RichText::new("[E] toggle").color(FAINT).size(t.text_sld - 1.0));
                 });
             });
+        });
+}
+
+// ── EXIF / IPTC panel ─────────────────────────────────────────────────────────
+
+fn draw_exif_section(ui: &mut Ui, t: &T, metadata: Option<&crate::exif::ImageMetadata>) {
+    Frame::none()
+        .inner_margin(Margin { left: t.row_x, right: t.row_x, top: t.row_y * 0.5, bottom: t.row_y })
+        .show(ui, |ui| {
+            match metadata {
+                None => {
+                    ui.label(RichText::new("No EXIF data available").color(FAINT).size(t.text_sld));
+                }
+                Some(meta) if meta.is_empty() => {
+                    ui.label(RichText::new("No EXIF data available").color(FAINT).size(t.text_sld));
+                }
+                Some(meta) => {
+                    ui.spacing_mut().item_spacing = egui::Vec2::new(0.0, 5.0);
+                    for field in &meta.fields {
+                        ui.horizontal(|ui| {
+                            // Label column: fixed width, dimmed
+                            let (_, lr) = ui.allocate_space(egui::Vec2::new(t.slbl_w + t.sval_w * 0.5, t.text_sld * 1.6));
+                            ui.painter().text(
+                                lr.left_center(), egui::Align2::LEFT_CENTER,
+                                field.label, egui::FontId::proportional(t.text_sld - 0.5), FAINT,
+                            );
+                            // Value: wrapping, full brightness
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.label(RichText::new(&field.value).color(TEXT).size(t.text_sld));
+                            });
+                        });
+                    }
+                }
+            }
         });
 }

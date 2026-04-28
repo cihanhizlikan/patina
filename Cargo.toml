@@ -35,9 +35,17 @@ crossbeam-channel = "0.5"
 # ── Cross-platform file dialogs ───────────────────────────────────────────────
 rfd = "0.14"
 
+# ── Data parallelism for pixel pipeline ───────────────────────────────────────
+rayon = "1.10"
+# ── RAW image decoding ────────────────────────────────────────────────────────
+rawler = { version = "0.6", default-features = false }
+
+# ── EXIF/IPTC metadata ────────────────────────────────────────────────────────
+kamadak-exif = "0.5"
+
+
 # ── Lossless JPEG transforms (rotate/flip without re-encoding) ────────────────
 mozjpeg = { version = "0.10", default-features = false, features = ["with_simd"] }
-rayon = "1.12.0"
 
 [build-dependencies]
 # winres kept for Windows icon embedding — platform-specific but harmless on others

@@ -30,6 +30,7 @@ mod nav;
 mod editor;
 mod ui;
 mod preset_thumbs;
+mod exif;
 
 use std::{
     collections::HashMap,
@@ -44,6 +45,7 @@ use nav::DirNavigator;
 use notify_debouncer_mini::{new_debouncer, Debouncer};
 use editor::{EditorState, EditParams, apply_edits};
 use ui::{draw_panel, ThumbCache, Icons, PanelAction};
+use exif::ImageMetadata;
 
 // ── Type aliases ──────────────────────────────────────────────────────────────
 
@@ -71,6 +73,7 @@ enum Msg {
     Unsupported    { path: PathBuf, reason: String },
     Preloaded      { path: PathBuf, image: DecodedImage },
     Deleted        { path: PathBuf },
+    MetadataLoaded { path: PathBuf, meta: ImageMetadata },
     DirectoryChanged,
 }
 
@@ -158,6 +161,10 @@ impl SaveAsModal {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum OpenMode { FirstImage, Navigate }
 
+/// Which guide overlay to draw on the canvas.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum GuideType { #[default] RuleOfThirds, GoldenRatio }
+
 struct App {
     // ── Image display ─────────────────────────────────────────────────────────
     current_path:         Option<PathBuf>,
@@ -187,10 +194,24 @@ struct App {
     /// Resizes the window exactly once on the first image launch.
     has_shown_first_image:    bool,
 
+    // ── Canvas view state (editor mode only) ──────────────────────────────────
+    /// Zoom multiplier: 1.0 = fit to canvas. Ctrl+scroll adjusts; Enter resets.
+    zoom:          f32,
+    /// Pan offset in logical pixels from the centred position.
+    pan:           egui::Vec2,
+    /// Whether the guide overlay is currently visible.
+    show_guides:   bool,
+    /// Which guide type is active when guides are shown.
+    guide_type:    GuideType,
+
+    // ── Metadata ──────────────────────────────────────────────────────────────
+    /// Cached EXIF/IPTC metadata for the current image.
+    metadata:      Option<ImageMetadata>,
+
     // ── Editor ────────────────────────────────────────────────────────────────
     editor_state:          Option<EditorState>,
     initial_editor_params: Option<EditParams>,
-    editor_open_sections:  [bool; 5],
+    editor_open_sections:  [bool; 6],
     thumb_cache:           Option<ThumbCache>,
     icon_cache:            Option<Icons>,
 
@@ -232,9 +253,14 @@ impl App {
             pre_maximize_size:        None,
             image_gen:                0,
             has_shown_first_image:    false,
+            zoom:          1.0,
+            pan:           egui::Vec2::ZERO,
+            show_guides:   false,
+            guide_type:    GuideType::default(),
+            metadata:      None,
             editor_state:             None,
             initial_editor_params:    None,
-            editor_open_sections:     [true, true, false, false, false],
+            editor_open_sections:     [true, true, false, false, false, false],
             thumb_cache:              None,
             icon_cache:               None,
             edit_rx:                  None,
@@ -293,6 +319,9 @@ impl App {
         self.loading_path = None;
         self.deleting     = false;
         self.frame_index  = 0;
+        self.metadata     = None;
+        self.zoom         = 1.0;
+        self.pan          = egui::Vec2::ZERO;
 
         // Schedule first animation frame for animated images.
         self.next_frame_at = if img.frames.len() > 1 {
@@ -313,6 +342,16 @@ impl App {
 
         self.preload_neighbour(true,  ctx);
         self.preload_neighbour(false, ctx);
+
+        // Load EXIF asynchronously — never blocks navigation.
+        let meta_path = path.clone();
+        let tx_meta   = self.msg_tx.clone();
+        let ctx2      = ctx.clone();
+        std::thread::spawn(move || {
+            let meta = exif::read_metadata(&meta_path);
+            let _ = tx_meta.send(Msg::MetadataLoaded { path: meta_path, meta });
+            ctx2.request_repaint();
+        });
     }
 
     fn preload_neighbour(&mut self, forward: bool, ctx: &egui::Context) {
@@ -354,6 +393,9 @@ impl App {
         self.frame_index   = 0;
         self.next_frame_at = None;
         self.image_gen    += 1;
+        self.metadata      = None;
+        self.zoom          = 1.0;
+        self.pan           = egui::Vec2::ZERO;
     }
 
     // ── Animation ─────────────────────────────────────────────────────────────
@@ -400,6 +442,12 @@ impl App {
                     log!("[delete] done: {}", path.display());
                     self.deleting = false;
                     self.navigator.remove(&path);
+                }
+                Msg::MetadataLoaded { path, meta } => {
+                    // Only apply if this is still the current image.
+                    if self.current_path.as_deref() == Some(&*path) {
+                        self.metadata = if meta.is_empty() { None } else { Some(meta) };
+                    }
                 }
                 Msg::DirectoryChanged => {
                     if let Some(dir) = &self.watched_dir {
@@ -842,11 +890,13 @@ impl App {
         let params   = self.editor_state.as_ref().map(|es| es.undo.current().clone()).unwrap_or_default();
         let can_undo = self.editor_state.as_ref().map(|es| es.undo.can_undo()).unwrap_or(false);
         let can_redo = self.editor_state.as_ref().map(|es| es.undo.can_redo()).unwrap_or(false);
+        let meta_ref = self.metadata.as_ref();
         let action   = draw_panel(
             ctx, &params, can_undo, can_redo,
             self.thumb_cache.as_ref().unwrap(),
             self.icon_cache.as_ref().unwrap(),
             &mut self.editor_open_sections,
+            meta_ref.map(|m| m as &crate::exif::ImageMetadata),
         );
         if action.has_any() { Some(action) } else { None }
     }
@@ -868,28 +918,30 @@ impl App {
         let scale    = self.editor_state.as_ref()
             .map(|es| es.undo.current().scale).unwrap_or(1.0);
 
-        // Allocate the full canvas for click sense BEFORE painting.
-        // Allocating after paint_at causes input/layout ordering issues that
-        // make double-clicks unreliable. The full canvas rect is used so
-        // double-clicking anywhere on the dark border also triggers maximize.
-        let canvas_resp = ui.allocate_rect(canvas, egui::Sense::click());
+        // Allocate the full canvas first for reliable click/drag sense.
+        let canvas_resp = ui.allocate_rect(canvas, egui::Sense::click_and_drag());
 
-        // Scale image to fill canvas, then apply user zoom.
-        // Clamp with a single ratio factor to preserve aspect ratio.
-        let fit   = (canvas.width() / it.width as f32).min(canvas.height() / it.height as f32);
-        let raw_w = it.width  as f32 * fit * scale;
-        let raw_h = it.height as f32 * fit * scale;
-        let clamp = (canvas.width() / raw_w).min(canvas.height() / raw_h).min(1.0);
-        let (dw, dh) = (raw_w * clamp, raw_h * clamp);
+        // Fit image to canvas, apply edit scale, then apply view zoom.
+        let fit = (canvas.width()  / it.width  as f32)
+            .min(canvas.height() / it.height as f32);
+        let base_w = it.width  as f32 * fit * scale;
+        let base_h = it.height as f32 * fit * scale;
+        // Clamp edit scale within canvas, then apply view zoom on top.
+        let edit_clamp = (canvas.width() / base_w).min(canvas.height() / base_h).min(1.0);
+        let dw = base_w * edit_clamp * self.zoom;
+        let dh = base_h * edit_clamp * self.zoom;
 
-        // Centre within the canvas.
+        // Centre + apply pan offset. In editor mode, zoom and pan are active.
+        let cx = canvas.min.x + (canvas.width()  - dw) * 0.5;
+        let cy = canvas.min.y + (canvas.height() - dh) * 0.5;
+        let (ox, oy) = if self.in_editor() {
+            (cx + self.pan.x, cy + self.pan.y)
+        } else {
+            (cx, cy)
+        };
+
         let img_rect = egui::Rect::from_min_size(
-            egui::pos2(
-                canvas.min.x + (canvas.width()  - dw) * 0.5,
-                canvas.min.y + (canvas.height() - dh) * 0.5,
-            ),
-            egui::vec2(dw, dh),
-        );
+            egui::pos2(ox, oy), egui::vec2(dw, dh));
 
         egui::Image::new(egui::load::SizedTexture::new(
             it.texture_id, egui::vec2(it.width as f32, it.height as f32),
@@ -897,24 +949,41 @@ impl App {
         .fit_to_exact_size(egui::vec2(dw, dh))
         .paint_at(ui, img_rect);
 
+        // ── Guide overlays (editor mode only) ─────────────────────────────────
+        if self.in_editor() && self.show_guides {
+            draw_guides(ui, img_rect, self.guide_type);
+        }
+
+        // ── Pan (drag in editor mode) ──────────────────────────────────────────
+        if self.in_editor() && canvas_resp.dragged() {
+            self.pan += canvas_resp.drag_delta();
+        }
+
+        // ── Double-click: toggle maximize (when not dragging) ─────────────────
         if canvas_resp.double_clicked() { self.toggle_maximize(ui.ctx()); }
     }
 
     fn handle_canvas_scroll(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        // Read the first vertical scroll event and consume all of them.
-        // This prevents a single wheel notch from triggering multiple navigations.
-        let scroll_dir: Option<bool> = ui.input_mut(|i| {
+        let (scroll_y, ctrl_held) = ui.input_mut(|i| {
             let dir = i.events.iter().find_map(|ev| {
                 if let egui::Event::Scroll(d) = ev {
-                    if d.y.abs() > d.x.abs() && d.y != 0.0 { return Some(d.y < 0.0); }
+                    if d.y.abs() > d.x.abs() && d.y != 0.0 { return Some(d.y); }
                 }
                 None
             });
             i.events.retain(|ev| !matches!(ev, egui::Event::Scroll(_)));
-            dir
+            (dir, i.modifiers.ctrl)
         });
-        if let Some(forward) = scroll_dir {
-            if !self.in_editor() { self.navigate(forward, ctx); }
+
+        let Some(dy) = scroll_y else { return };
+
+        if self.in_editor() && ctrl_held {
+            // Ctrl+scroll → zoom. Each notch changes zoom by 15%.
+            let factor = if dy > 0.0 { 1.15_f32 } else { 1.0 / 1.15 };
+            self.zoom = (self.zoom * factor).clamp(0.1, 10.0);
+        } else if !self.in_editor() {
+            // Viewer mode → navigate images.
+            self.navigate(dy < 0.0, ctx);
         }
     }
 
@@ -947,6 +1016,19 @@ impl App {
             if key!(no,   egui::Key::E)        { self.exit_editor(false); }
             if key!(no,   egui::Key::Escape)   { self.exit_editor(false); }
             if key!(no,   egui::Key::Delete)   { self.delete_current(); }
+            if key!(no,   egui::Key::G)            { self.show_guides = !self.show_guides; }
+            if key!(no,   egui::Key::Tab) {
+                // Cycle guide type when guides are visible
+                self.guide_type = match self.guide_type {
+                    GuideType::RuleOfThirds => GuideType::GoldenRatio,
+                    GuideType::GoldenRatio  => GuideType::RuleOfThirds,
+                };
+            }
+            if key!(ctrl, egui::Key::Num0) || key!(ctrl, egui::Key::Space) {
+                // Reset zoom and pan
+                self.zoom = 1.0;
+                self.pan  = egui::Vec2::ZERO;
+            }
             if key!(no,   egui::Key::Q) {
                 if self.exit_editor(true) { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
             }
@@ -977,6 +1059,31 @@ impl App {
 /// Reuses the existing texture when dimensions match (animated frames / live edits).
 /// Creates and registers a new texture when dimensions change.
 /// The `TextureId` is stable until dimensions change — egui never reads the pixels.
+// ── Guide overlays ────────────────────────────────────────────────────────────
+
+/// Draw composition guides (rule of thirds or golden ratio) over the image rect.
+fn draw_guides(ui: &egui::Ui, r: egui::Rect, guide_type: GuideType) {
+    const LINE_COLOR: egui::Color32 = egui::Color32::from_rgba_premultiplied(255, 255, 255, 60);
+    const STROKE: egui::Stroke = egui::Stroke { width: 1.0, color: LINE_COLOR };
+    let p = ui.painter();
+
+    let divisions: &[f32] = match guide_type {
+        // Rule of thirds: divide into equal thirds
+        GuideType::RuleOfThirds => &[1.0/3.0, 2.0/3.0],
+        // Golden ratio: phi-based divisions (~0.382 / 0.618)
+        GuideType::GoldenRatio  => &[0.382, 0.618],
+    };
+
+    for &t in divisions {
+        // Vertical lines
+        let x = r.min.x + r.width() * t;
+        p.line_segment([egui::pos2(x, r.min.y), egui::pos2(x, r.max.y)], STROKE);
+        // Horizontal lines
+        let y = r.min.y + r.height() * t;
+        p.line_segment([egui::pos2(r.min.x, y), egui::pos2(r.max.x, y)], STROKE);
+    }
+}
+
 fn image_copy(texture: &wgpu::Texture) -> wgpu::ImageCopyTexture<'_> {
     wgpu::ImageCopyTexture {
         texture, mip_level: 0,
