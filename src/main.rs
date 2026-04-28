@@ -523,10 +523,13 @@ impl App {
 
     // ── Editor lifecycle ──────────────────────────────────────────────────────
 
-    fn enter_editor(&mut self) {
+    fn enter_editor(&mut self, ctx: &egui::Context) {
         if self.editor_state.is_some() { return; }
-        let Some(img) = &self.current_image else { return };
-        self.editor_state          = Some(EditorState::new(img));
+        // Clone the image out first — we need &mut self for stop_slideshow
+        // and EditorState::new, which conflicts with borrowing current_image.
+        let Some(img) = self.current_image.clone() else { return };
+        if self.slideshow_active { self.stop_slideshow(ctx); }
+        self.editor_state          = Some(EditorState::new(&img));
         self.initial_editor_params = Some(EditParams::default());
         self.thumb_cache           = Some(ThumbCache::new());
     }
@@ -1087,7 +1090,7 @@ impl App {
             if key!(no, egui::Key::ArrowUp)    { self.navigate(false, ctx); }
             if key!(no, egui::Key::PageUp)     { self.navigate(false, ctx); }
             if key!(no, egui::Key::E) {
-                self.enter_editor();
+                self.enter_editor(ctx);
                 if self.thumb_cache.is_none() { self.thumb_cache = Some(ThumbCache::new()); }
             }
             if key!(no, egui::Key::F) || key!(no, egui::Key::F11) {

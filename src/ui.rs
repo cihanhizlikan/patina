@@ -259,14 +259,21 @@ pub fn draw_panel(
             });
 
             header_row(ui, &t, "HISTORY", |ui| {
-                ui.add_enabled_ui(can_undo, |ui| {
-                    if icon_btn(ui, &t, &icons.undo, "Undo").clicked() { action.undo = true; }
-                });
-                ui.add_enabled_ui(can_redo, |ui| {
-                    if icon_btn(ui, &t, &icons.redo, "Redo").clicked() { action.redo = true; }
-                });
+                // When the available width is too narrow for all three labelled buttons,
+                // drop the text labels and show icons only. This prevents overlap at any
+                // panel width including maximised-window narrow states.
+                let avail  = ui.available_width();
+                let labels = if avail >= 230.0 { ("Undo", "Redo", "Reset") }
+                             else              { ("",     "",     ""      ) };
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icon_btn_danger(ui, &t, &icons.reset, "Reset").clicked() { action.reset_all = true; }
+                    if icon_btn_danger(ui, &t, &icons.reset, labels.2).clicked() { action.reset_all = true; }
+                    ui.add_enabled_ui(can_redo, |ui| {
+                        if icon_btn(ui, &t, &icons.redo, labels.1).clicked() { action.redo = true; }
+                    });
+                    ui.add_enabled_ui(can_undo, |ui| {
+                        if icon_btn(ui, &t, &icons.undo, labels.0).clicked() { action.undo = true; }
+                    });
                 });
             });
 
@@ -395,12 +402,16 @@ fn alloc_btn(
     pad:     f32,
     gap:     f32,
 ) -> (BtnLayout, Response) {
-    let lbl_w = ui.fonts(|f| {
-        f.layout_no_wrap(label.to_string(), egui::FontId::proportional(font_sz), TEXT).size().x
-    });
-    let ic_w = if has_icon { icon_sz + gap } else { 0.0 };
+    let lbl_w = if label.is_empty() { 0.0 } else {
+        ui.fonts(|f| {
+            f.layout_no_wrap(label.to_string(), egui::FontId::proportional(font_sz), TEXT).size().x
+        })
+    };
+    let ic_w    = if has_icon { icon_sz + if label.is_empty() { 0.0 } else { gap } } else { 0.0 };
     let content_w = ic_w + lbl_w;
-    let btn_w = width.unwrap_or(pad + content_w + pad);
+    // Icon-only buttons use symmetric padding; labelled buttons use full pad on both sides.
+    let effective_pad = if label.is_empty() && has_icon { pad * 0.75 } else { pad };
+    let btn_w = width.unwrap_or(effective_pad + content_w + effective_pad);
 
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(btn_w, height), Sense::click());
 
