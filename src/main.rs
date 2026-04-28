@@ -63,6 +63,8 @@ const MIN_WINDOW:         (f32, f32) = (400.0, 300.0);
 const DEFAULT_WINDOW:     (u32, u32) = (900, 680);
 /// Canvas background colour — matches ui::CANVAS (#0e0e10).
 const CANVAS_COLOR: egui::Color32 = egui::Color32::from_rgb(0x0E, 0x0E, 0x10);
+/// How long each image is shown during slideshow.
+const SLIDESHOW_INTERVAL: Duration = Duration::from_secs(5);
 
 // ── Inter-thread messages ─────────────────────────────────────────────────────
 
@@ -194,6 +196,10 @@ struct App {
     /// Resizes the window exactly once on the first image launch.
     has_shown_first_image:    bool,
 
+    // ── Slideshow ─────────────────────────────────────────────────────────────
+    slideshow_active:  bool,
+    slideshow_next_at: Option<Instant>,
+
     // ── Canvas view state (editor mode only) ──────────────────────────────────
     /// Zoom multiplier: 1.0 = fit to canvas. Ctrl+scroll adjusts; Enter resets.
     zoom:          f32,
@@ -227,6 +233,7 @@ struct App {
     pending_rename:           Option<(PathBuf, String)>,
     pending_confirmed_delete: bool,
     pending_save_and_exit:    Option<bool>,
+    show_help:                bool,
 }
 
 impl App {
@@ -253,6 +260,8 @@ impl App {
             pre_maximize_size:        None,
             image_gen:                0,
             has_shown_first_image:    false,
+            slideshow_active:  false,
+            slideshow_next_at: None,
             zoom:          1.0,
             pan:           egui::Vec2::ZERO,
             show_guides:   false,
@@ -272,6 +281,7 @@ impl App {
             pending_rename:           None,
             pending_confirmed_delete: false,
             pending_save_and_exit:    None,
+            show_help:                false,
         }
     }
 
@@ -488,6 +498,27 @@ impl App {
     /// be applied correctly via `ViewportCommand`.
     fn toggle_fullscreen(&mut self, _ctx: &egui::Context) {
         self.pending_fullscreen_toggle = true;
+    }
+
+    fn start_slideshow(&mut self, ctx: &egui::Context) {
+        if self.current_image.is_none() { return; }
+        self.slideshow_active  = true;
+        self.slideshow_next_at = Some(Instant::now() + SLIDESHOW_INTERVAL);
+        // Enter fullscreen for the slideshow experience.
+        if !self.fullscreen { self.toggle_fullscreen(ctx); }
+        ctx.request_repaint();
+    }
+
+    fn stop_slideshow(&mut self, ctx: &egui::Context) {
+        self.slideshow_active  = false;
+        self.slideshow_next_at = None;
+        // Exit fullscreen when slideshow ends.
+        if self.fullscreen { self.toggle_fullscreen(ctx); }
+    }
+
+    fn toggle_slideshow(&mut self, ctx: &egui::Context) {
+        if self.slideshow_active { self.stop_slideshow(ctx); }
+        else                     { self.start_slideshow(ctx); }
     }
 
     // ── Editor lifecycle ──────────────────────────────────────────────────────
@@ -799,6 +830,18 @@ impl App {
         if let Some(at) = self.next_frame_at {
             ctx.request_repaint_after(at.saturating_duration_since(Instant::now()));
         }
+
+        // Advance slideshow when the timer fires.
+        if self.slideshow_active {
+            if let Some(at) = self.slideshow_next_at {
+                if Instant::now() >= at {
+                    self.navigate(true, ctx);
+                    self.slideshow_next_at = Some(Instant::now() + SLIDESHOW_INTERVAL);
+                }
+                ctx.request_repaint_after(
+                    self.slideshow_next_at.unwrap().saturating_duration_since(Instant::now()));
+            }
+        }
     }
 
     /// Drive the debounced slider pipeline and poll for completed edits.
@@ -849,6 +892,7 @@ impl App {
         let icons_ref = icons_ptr.map(|p| unsafe { &*p });
         draw_modal(ctx, self, icons_ref);
         draw_save_as_modal(ctx, self);
+        if self.show_help { draw_help_modal(ctx, self.in_editor(), &mut self.show_help); }
 
         // SidePanel must precede CentralPanel so egui allocates its input region first.
         let pending_action = self.draw_editor_panel(ctx);
@@ -1015,6 +1059,9 @@ impl App {
             if key!(cs,   egui::Key::S)        { self.save_as_returning(ctx); }
             if key!(no,   egui::Key::E)        { self.exit_editor(false); }
             if key!(no,   egui::Key::Escape)   { self.exit_editor(false); }
+            if key!(no,   egui::Key::F)        { self.toggle_fullscreen(ctx); }
+            if key!(no,   egui::Key::F11)      { self.toggle_fullscreen(ctx); }
+            if key!(no,   egui::Key::H)        { self.show_help = !self.show_help; }
             if key!(no,   egui::Key::Delete)   { self.delete_current(); }
             if key!(no,   egui::Key::G)            { self.show_guides = !self.show_guides; }
             if key!(no,   egui::Key::Tab) {
@@ -1043,12 +1090,107 @@ impl App {
                 self.enter_editor();
                 if self.thumb_cache.is_none() { self.thumb_cache = Some(ThumbCache::new()); }
             }
-            if key!(no, egui::Key::F)          { self.toggle_fullscreen(ctx); }
-            if key!(no, egui::Key::F11)        { self.toggle_fullscreen(ctx); }
-            if key!(no, egui::Key::Escape) { if self.fullscreen { self.toggle_fullscreen(ctx); } }
+            if key!(no, egui::Key::F) || key!(no, egui::Key::F11) {
+                // F/F11 in slideshow: exit slideshow (which also exits fullscreen).
+                // F/F11 outside slideshow: toggle fullscreen normally.
+                if self.slideshow_active { self.stop_slideshow(ctx); }
+                else                     { self.toggle_fullscreen(ctx); }
+            }
+            if key!(no, egui::Key::Escape) {
+                // Stop slideshow (which also exits fullscreen via stop_slideshow).
+                // If not in slideshow but in fullscreen, exit fullscreen directly.
+                if self.slideshow_active { self.stop_slideshow(ctx); }
+                else if self.fullscreen  { self.toggle_fullscreen(ctx); }
+            }
+            if key!(no, egui::Key::S)          { self.toggle_slideshow(ctx); }
+            if key!(no, egui::Key::H)          { self.show_help = !self.show_help; }
             if key!(no, egui::Key::Delete)     { self.delete_current(); }
             if key!(no, egui::Key::Q)          { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
         }
+    }
+}
+
+// ── Help modal ────────────────────────────────────────────────────────────────
+
+fn draw_help_modal(ctx: &egui::Context, in_editor: bool, show: &mut bool) {
+    use ui::{BG, BORDER, TEXT, DIM, ACCENT, FAINT};
+
+    ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("help_dim")))
+        .rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(160));
+
+    egui::Window::new("help_modal")
+        .title_bar(false).resizable(false).collapsible(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .frame(egui::Frame::none().fill(BG)
+            .stroke(egui::Stroke::new(1.0, BORDER))
+            .rounding(egui::Rounding::same(10.0))
+            .inner_margin(24.0))
+        .show(ctx, |ui| {
+            ui.set_width(480.0);
+            ui.visuals_mut().override_text_color               = None;
+            ui.visuals_mut().widgets.noninteractive.fg_stroke.color = TEXT;
+
+            ui.label(egui::RichText::new("Keyboard Shortcuts").color(TEXT).size(16.0).strong());
+            ui.add_space(12.0);
+
+            // Two-column layout: key | description
+            let row = |ui: &mut egui::Ui, key: &str, desc: &str| {
+                ui.horizontal(|ui| {
+                    let (_, kr) = ui.allocate_exact_size(
+                        egui::vec2(120.0, 22.0), egui::Sense::hover());
+                    ui.painter().text(kr.rect.left_center(), egui::Align2::LEFT_CENTER,
+                        key, egui::FontId::monospace(12.0), ACCENT);
+                    ui.label(egui::RichText::new(desc).color(TEXT).size(12.0));
+                });
+            };
+            let section = |ui: &mut egui::Ui, title: &str| {
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(title).color(FAINT).size(10.5).strong());
+                ui.add_space(2.0);
+            };
+
+            section(ui, "VIEWER");
+            row(ui, "← ↑ PgUp",       "Previous image");
+            row(ui, "→ ↓ PgDn",       "Next image");
+            row(ui, "E",               "Enter Editor mode");
+            row(ui, "S",               "Start / stop slideshow");
+            row(ui, "F  /  F11",       "Toggle fullscreen");
+            row(ui, "Del",             "Delete current image");
+            row(ui, "Q",               "Quit");
+
+            section(ui, "SLIDESHOW");
+            row(ui, "S",               "Stop slideshow");
+            row(ui, "Esc",             "Stop slideshow");
+            row(ui, "F  /  F11",       "Stop slideshow");
+
+            if in_editor {
+                section(ui, "EDITOR");
+                row(ui, "E  /  Esc",       "Return to Viewer");
+                row(ui, "Ctrl+Z",          "Undo");
+                row(ui, "Ctrl+Shift+Z",    "Redo");
+                row(ui, "Ctrl+S",          "Save");
+                row(ui, "Ctrl+Shift+S",    "Save As");
+                row(ui, "Del",             "Delete current image");
+                row(ui, "G",               "Toggle guide overlay");
+                row(ui, "Tab",             "Cycle guide type");
+                row(ui, "Ctrl+Scroll",     "Zoom in / out");
+                row(ui, "Ctrl+0",          "Reset zoom & pan");
+                row(ui, "Drag canvas",     "Pan");
+                row(ui, "F  /  F11",       "Toggle fullscreen");
+                row(ui, "Q",               "Quit");
+            }
+
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new("Press H or Esc to close").color(DIM).size(11.0));
+        });
+
+    if ctx.input_mut(|i| {
+        i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) ||
+        i.consume_key(egui::Modifiers::NONE, egui::Key::H)
+    }) {
+        *show = false;
     }
 }
 
