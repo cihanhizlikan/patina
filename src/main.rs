@@ -1815,8 +1815,12 @@ fn install_fonts(ctx: &egui::Context) {
 }
 
 fn load_icon() -> egui::IconData {
-    // Place a 256×256 RGBA PNG at src/assets/icon.png and use:
-    //   egui::IconData::try_from_png_bytes(include_bytes!("assets/icon.png")).unwrap_or_default()
+    // To embed the window icon, place a 256×256 RGBA PNG at src/assets/icon.png
+    // and replace this with:
+    //   let bytes = include_bytes!("assets/icon.png");
+    //   let img   = image::load_from_memory(bytes).unwrap().into_rgba8();
+    //   let (w, h) = img.dimensions();
+    //   egui::IconData { rgba: img.into_raw(), width: w, height: h }
     egui::IconData::default()
 }
 
