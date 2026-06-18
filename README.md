@@ -1,0 +1,32 @@
+# Patina
+
+A fast, cross-platform image viewer and editor built in Rust.
+
+<!-- Replace with a real screenshot — this is the single highest-impact thing you can add. -->
+![Patina screenshot](docs/screenshot.png)
+
+Patina is a lightweight, self-contained desktop image viewer and editor focused on speed and a clean workflow. It is built with **egui / eframe** and **wgpu** for GPU-accelerated rendering.
+
+## Features
+- **GPU-accelerated rendering** via wgpu, with high-quality **Lanczos zoom**
+- **RAW camera support** — reads 20+ RAW formats (via `rawler`)
+- **Metadata** — EXIF / IPTC inspection panel
+- **XMP sidecar** — star ratings and colour labels written to sidecar files
+- **Export presets** — configurable, repeatable export settings
+- **Slideshow mode** and on-screen **guide overlays**
+- Cross-platform, with a Windows installer built via Inno Setup
+
+## Tech stack
+Rust · eframe / egui · wgpu · rawler
+
+## Building from source
+```bash
+cargo build --release
+```
+The release binary will be in `target/release/`.
+
+## Installation (Windows)
+A Windows installer is produced with Inno Setup — see the [Releases](../../releases) page.
+
+## License
+<!-- Add your license here, e.g. MIT or Apache-2.0 -->
