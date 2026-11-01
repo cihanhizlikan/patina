@@ -27,6 +27,7 @@ macro_rules! log {
 
 mod editor;
 mod exif;
+mod hud;
 mod keymap;
 mod loader;
 mod logging;
@@ -87,6 +88,7 @@ enum Msg {
     Unsupported {
         path: PathBuf,
         reason: String,
+        mode: OpenMode,
     },
     Preloaded {
         path: PathBuf,
@@ -309,6 +311,13 @@ struct App {
     msg_tx: Sender<Msg>,
     msg_rx: Receiver<Msg>,
     loading_path: Option<PathBuf>,
+    /// When the load on screen started, for the loading bar.
+    loading_since: Option<Instant>,
+    /// The file on screen would not open: its reason, shown as a card.
+    bad_file: Option<String>,
+    /// Last navigation or mouse move over the canvas: the HUD shows from it.
+    hud_since: Option<Instant>,
+    toast: hud::Toast,
     preload_cache: HashMap<PathBuf, DecodedImage>,
     deleting: bool,
     dir_watcher: Option<DirWatcher>,
@@ -382,6 +391,10 @@ impl App {
             msg_tx,
             msg_rx,
             loading_path: None,
+            loading_since: None,
+            bad_file: None,
+            hud_since: None,
+            toast: hud::Toast::default(),
             preload_cache: HashMap::new(),
             deleting: false,
             dir_watcher: None,
@@ -452,6 +465,7 @@ impl App {
             return;
         }
         self.loading_path = Some(path.clone());
+        self.loading_since = Some(Instant::now());
 
         let tx = self.msg_tx.clone();
         let ctx = ctx.clone();
@@ -468,7 +482,7 @@ impl App {
                     mode,
                     correct_ext: ext,
                 },
-                LoadOutcome::Unsupported(reason) => Msg::Unsupported { path, reason },
+                LoadOutcome::Unsupported(reason) => Msg::Unsupported { path, reason, mode },
             };
             let _ = tx.send(msg);
             ctx.request_repaint();
@@ -483,6 +497,8 @@ impl App {
         ctx: &egui::Context,
     ) {
         self.loading_path = None;
+        self.loading_since = None;
+        self.bad_file = None;
         self.deleting = false;
         self.frame_index = 0;
         self.metadata = None;
@@ -529,6 +545,36 @@ impl App {
             });
             ctx2.request_repaint();
         });
+    }
+
+    /// A file that would not open takes the image's place as a card, and
+    /// browsing goes on from it: it is current, so the arrows, Delete and the
+    /// title all work as for an image. Before, an error modal stopped
+    /// everything, and `loading_path` stayed set, so the file could not be
+    /// tried again.
+    fn show_bad_file(
+        &mut self,
+        path: PathBuf,
+        reason: String,
+        mode: OpenMode,
+        ctx: &egui::Context,
+    ) {
+        if self.loading_path.as_ref().is_some_and(|p| *p != path) {
+            return; // the user has already moved on to another file
+        }
+        let dir_changed = self.current_path.as_deref().and_then(|p| p.parent()) != path.parent();
+        self.clear_image();
+        self.loading_path = None;
+        self.loading_since = None;
+        self.labels = xmp::read_labels(&path);
+        self.current_path = Some(path.clone());
+        self.bad_file = Some(reason);
+        if dir_changed || mode == OpenMode::FirstImage {
+            self.navigator.set_current(path.clone());
+            self.watch_directory(path.parent().map(|p| p.to_path_buf()), ctx);
+        }
+        self.preload_neighbour(true, ctx);
+        self.preload_neighbour(false, ctx);
     }
 
     fn preload_neighbour(&mut self, forward: bool, ctx: &egui::Context) {
@@ -586,6 +632,7 @@ impl App {
         self.image_gen += 1;
         self.metadata = None;
         self.labels = ImageLabels::default();
+        self.bad_file = None;
         self.zoom = 1.0;
         self.pan = egui::Vec2::ZERO;
     }
@@ -642,9 +689,9 @@ impl App {
                     }
                     dr.rename_offer = Some((path, correct_ext));
                 }
-                Msg::Unsupported { path, reason } => {
+                Msg::Unsupported { path, reason, mode } => {
                     log!("[load] unsupported: {}: {}", path.display(), reason);
-                    dr.error_msg = Some(format!("Cannot open {}\n\n{reason}", path.display()));
+                    self.show_bad_file(path, reason, mode, ctx);
                 }
                 Msg::Preloaded { path, image } => {
                     self.preload_cache.insert(path, image);
@@ -656,6 +703,7 @@ impl App {
                             log!("[delete] moved to the Recycle Bin: {}", path.display());
                             self.navigator.remove(&path);
                             self.preload_cache.remove(&path);
+                            self.toast.show("Moved to the Recycle Bin");
                         }
                         // The view has already moved on; the file is still
                         // there and still in the list, so it can be reopened.
@@ -691,6 +739,29 @@ impl App {
         };
         if let Some(p) = next {
             self.open_image(p, OpenMode::Navigate, ctx);
+            // A slideshow is for looking; the HUD stays down unless the mouse moves.
+            if !self.slideshow_active {
+                self.hud_since = Some(Instant::now());
+            }
+        }
+    }
+
+    /// Ctrl+O, or Open… in the empty state.
+    fn open_dialog(&mut self, ctx: &egui::Context) {
+        let mut d = rfd::FileDialog::new()
+            .set_title("Open image")
+            .add_filter("Images", loader::SUPPORTED_EXTENSIONS);
+        if let Some(dir) = self.current_path.as_deref().and_then(Path::parent) {
+            d = d.set_directory(dir);
+        }
+        if let Some(path) = d.pick_file() {
+            let mode = if self.current_path.is_none() {
+                OpenMode::FirstImage
+            } else {
+                OpenMode::Navigate
+            };
+            self.open_image(path, mode, ctx);
+            self.hud_since = Some(Instant::now());
         }
     }
 
@@ -1007,8 +1078,10 @@ impl App {
             orientation::save_geometry(&path, &params).map(|wrote| {
                 if wrote {
                     log!("[save] EXIF orientation written; image data untouched");
+                    "Saved \u{2014} orientation stored in EXIF, pixels untouched"
                 } else {
                     log!("[save] orientation already as shown; file not written");
+                    "Nothing to save \u{2014} the file already looks like this"
                 }
             })
         } else {
@@ -1020,10 +1093,14 @@ impl App {
                 None,
                 &save::Metadata::read(&path),
             )
+            .map(|()| "Saved")
         };
-        if let Err(e) = saved {
-            self.pending_error = Some(format!("Save failed:\n{e}"));
-            return false;
+        match saved {
+            Ok(said) => self.toast.show(said),
+            Err(e) => {
+                self.pending_error = Some(format!("Save failed:\n{e}"));
+                return false;
+            }
         }
         // The file now holds what is on screen, so it becomes the image the
         // next edit starts from, as in commit_save_as. Without this the edit
@@ -1079,6 +1156,10 @@ impl App {
         if let Err(e) = save::to_path(&display, self.frame_index, &dest, quality, max_dim, &meta) {
             self.pending_error = Some(format!("Save failed:\n{e}"));
             return;
+        }
+        if let Some(name) = dest.file_name() {
+            self.toast
+                .show(format!("Saved as {}", name.to_string_lossy()));
         }
         self.current_path = Some(dest.clone());
         self.current_image = Some(display);
@@ -1454,14 +1535,20 @@ impl App {
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(ui::tok::CANVAS))
             .show(ctx, |ui| {
+                let canvas = ui.available_rect_before_wrap();
                 self.draw_canvas_image(ui);
-                self.draw_label_overlay(ui);
+                self.draw_viewer_overlays(ui, canvas);
                 self.handle_canvas_scroll(ui, ctx);
                 self.handle_canvas_drop(ui, ctx);
             });
     }
 
     fn draw_canvas_image(&mut self, ui: &mut egui::Ui) {
+        // The texture outlives the image it was made from (it is reused for
+        // the next one), so with no image there is nothing to draw.
+        if self.view().is_none() {
+            return;
+        }
         let Some(it) = &self.image_texture else {
             return;
         };
@@ -1554,48 +1641,69 @@ impl App {
         }
     }
 
-    /// Draw star rating and colour label overlay in the bottom-left of the canvas.
-    fn draw_label_overlay(&self, ui: &mut egui::Ui) {
-        if self.labels.is_empty() {
-            return;
-        }
-        let canvas = ui.available_rect_before_wrap();
-        let p = ui.painter();
-        const PAD: f32 = 10.0;
-        const STAR_SZ: f32 = 16.0;
-        const GAP: f32 = 3.0;
-        let pad = PAD;
-        let star_sz = STAR_SZ;
-        let gap = GAP;
+    /// Everything item 6 puts over the canvas: the bad-file card or the empty
+    /// state where there is no image, the loading bar, the HUD and the toast.
+    /// Each fade asks for exactly the frames it needs.
+    fn draw_viewer_overlays(&mut self, ui: &mut egui::Ui, canvas: egui::Rect) {
+        let ctx = ui.ctx().clone();
+        let now = Instant::now();
+        let editor = self.in_editor();
 
-        // Star rating
-        if self.labels.rating > 0 {
-            let base_x = canvas.min.x + pad;
-            let base_y = canvas.max.y - pad - star_sz;
-            for i in 0..self.labels.rating {
-                let cx = base_x + i as f32 * (star_sz + gap) + star_sz * 0.5;
-                let cy = base_y + star_sz * 0.5;
-                draw_star(
-                    p,
-                    egui::pos2(cx, cy),
-                    star_sz * 0.48,
-                    star_sz * 0.20,
-                    ui::tok::STAR,
-                );
+        if !editor {
+            if let (Some(reason), Some(path)) = (&self.bad_file, &self.current_path) {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                hud::draw_bad_file_card(ui.painter(), canvas, &name, reason);
+            } else if self.current_path.is_none() && self.loading_path.is_none() {
+                if hud::draw_empty_state(ui, canvas) {
+                    self.open_dialog(&ctx);
+                }
+            }
+            if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
+                hud::draw_drop_target(ui.painter(), canvas);
             }
         }
 
-        // Colour label dot
-        if self.labels.colour != ColourLabel::None {
-            let dot_r = 6.0;
-            let cx = canvas.min.x + pad + dot_r;
-            let cy = canvas.max.y - pad - star_sz - gap * 2.0 - dot_r;
-            p.circle_filled(egui::pos2(cx, cy), dot_r, self.labels.colour.color());
-            p.circle_stroke(
-                egui::pos2(cx, cy),
-                dot_r,
-                egui::Stroke::new(1.0, ui::tok::ON_PHOTO_RING),
-            );
+        if let Some(since) = self.loading_since.filter(|_| self.loading_path.is_some()) {
+            if hud::loading_bar_due(since, now) {
+                hud::draw_loading_bar(ui.painter(), canvas, now - since);
+                ctx.request_repaint();
+            } else {
+                ctx.request_repaint_after(hud::LOADING_BAR_AFTER);
+            }
+        }
+
+        if !editor {
+            let moved = ctx.input(|i| {
+                i.pointer.delta() != egui::Vec2::ZERO
+                    && i.pointer.hover_pos().is_some_and(|p| canvas.contains(p))
+            });
+            if moved {
+                self.hud_since = Some(now);
+            }
+            if let (Some(since), Some(path)) = (self.hud_since, &self.current_path) {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                let info = hud::HudInfo {
+                    name: &name,
+                    position: self.navigator.position_of(path),
+                    dims: self.current_image.as_ref().map(|i| (i.width, i.height)),
+                    labels: &self.labels,
+                };
+                let alpha = hud::fade_alpha(since, hud::HUD_HOLD, now);
+                hud::draw_hud(ui.painter(), canvas, &info, alpha);
+                match hud::fade_repaint(since, hud::HUD_HOLD, now) {
+                    Some(after) => ctx.request_repaint_after(after),
+                    None => self.hud_since = None,
+                }
+            }
+        }
+
+        if let Some((text, since)) = &self.toast.current {
+            let alpha = hud::fade_alpha(*since, hud::TOAST_HOLD, now);
+            hud::draw_toast(ui.painter(), canvas, text, alpha);
+            match hud::fade_repaint(*since, hud::TOAST_HOLD, now) {
+                Some(after) => ctx.request_repaint_after(after),
+                None => self.toast.current = None,
+            }
         }
     }
 
@@ -1634,9 +1742,12 @@ impl App {
             Action::Rate => {
                 if let Some(path) = &self.current_path {
                     self.labels.rating = keymap::digit(key);
-                    if let Err(e) = xmp::write_labels(path, &self.labels) {
-                        self.pending_error = Some(format!("Could not save the rating:\n{e}"));
-                        self.labels = xmp::read_labels(path);
+                    match xmp::write_labels(path, &self.labels) {
+                        Ok(()) => self.toast.show(hud::rating_toast(self.labels.rating)),
+                        Err(e) => {
+                            self.pending_error = Some(format!("Could not save the rating:\n{e}"));
+                            self.labels = xmp::read_labels(path);
+                        }
                     }
                 }
             }
@@ -1650,15 +1761,28 @@ impl App {
                         ColourLabel::Blue => ColourLabel::Purple,
                         ColourLabel::Purple => ColourLabel::None,
                     };
-                    if let Err(e) = xmp::write_labels(path, &self.labels) {
-                        self.pending_error = Some(format!("Could not save the colour label:\n{e}"));
-                        self.labels = xmp::read_labels(path);
+                    match xmp::write_labels(path, &self.labels) {
+                        Ok(()) => self.toast.show(hud::label_toast(self.labels.colour)),
+                        Err(e) => {
+                            self.pending_error =
+                                Some(format!("Could not save the colour label:\n{e}"));
+                            self.labels = xmp::read_labels(path);
+                        }
                     }
                 }
             }
             Action::EnterEditor => {
+                if self.current_image.is_none() {
+                    // No pixels, nothing to edit; say so rather than ignore E.
+                    self.toast.show(if self.bad_file.is_some() {
+                        "This file can\u{2019}t be opened, so it can\u{2019}t be edited"
+                    } else {
+                        "Open an image to edit it"
+                    });
+                }
                 self.enter_editor(ctx);
             }
+            Action::Open => self.open_dialog(ctx),
             Action::LeaveEditor => {
                 self.exit_editor(false);
             }
@@ -2532,6 +2656,10 @@ fn apply_modal_action(app: &mut App, action: ModalAction) {
                 match rename_no_replace(&old, &new) {
                     Ok(()) => {
                         app.navigator.rename(&old, new.clone());
+                        if let Some(name) = new.file_name() {
+                            app.toast
+                                .show(format!("Renamed to {}", name.to_string_lossy()));
+                        }
                         app.current_path = Some(new);
                     }
                     Err(e) => {
@@ -2745,7 +2873,11 @@ fn main() {
                     mode: OpenMode::FirstImage,
                     correct_ext: ext,
                 },
-                LoadOutcome::Unsupported(reason) => Msg::Unsupported { path, reason },
+                LoadOutcome::Unsupported(reason) => Msg::Unsupported {
+                    path,
+                    reason,
+                    mode: OpenMode::FirstImage,
+                },
             };
             let _ = tx.send(msg);
         });
@@ -3454,6 +3586,158 @@ mod keyboard_tests {
             "a.jpg — Patina"
         );
         assert_eq!(window_title(None, None, false), "Patina");
+    }
+
+    // ── Item 6: HUD, toasts, bad files, the empty state ───────────────────────
+
+    /// Run frames that drain background messages until `done`, as the app's
+    /// update loop would; panics after 5 s.
+    fn pump_until(app: &mut App, ctx: &egui::Context, done: impl Fn(&App) -> bool) {
+        for _ in 0..500 {
+            if done(app) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            let _ = ctx.run(Default::default(), |ctx| {
+                app.process_background_messages(ctx)
+            });
+        }
+        panic!("timed out");
+    }
+
+    /// Every piece of text this frame paints.
+    fn painted_text(app: &mut App, ctx: &egui::Context) -> Vec<String> {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let out = ctx.run(raw, |ctx| app.draw_ui(ctx));
+        out.shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A file that will not decode shows as a card, not a modal, and the
+    /// arrows carry on past it.
+    #[test]
+    fn a_bad_file_is_a_card_and_browsing_goes_on() {
+        let dir = TempDir::new("badfile");
+        let a = dir.jpeg("a.jpg");
+        let b = dir.0.join("b.jpg");
+        std::fs::write(&b, b"not a jpeg at all").unwrap();
+        let c = dir.jpeg("c.jpg");
+        let (mut app, ctx) = app_on(&a);
+
+        frame(
+            &mut app,
+            &ctx,
+            vec![press(Key::ArrowRight, Modifiers::NONE)],
+        );
+        pump_until(&mut app, &ctx, |app| app.bad_file.is_some());
+        frame(&mut app, &ctx, vec![]); // where an error modal would have opened
+
+        assert!(app.modal.is_none(), "no modal: {:?}", app.modal);
+        assert_eq!(app.current_path.as_ref(), Some(&b));
+        assert!(
+            app.current_image.is_none(),
+            "a's pixels are not left on screen"
+        );
+        assert!(app.loading_path.is_none(), "b can be tried again");
+        let text = painted_text(&mut app, &ctx);
+        assert!(
+            text.iter().any(|t| t == "Can\u{2019}t open b.jpg"),
+            "{text:?}"
+        );
+
+        frame(
+            &mut app,
+            &ctx,
+            vec![press(Key::ArrowRight, Modifiers::NONE)],
+        );
+        pump_until(&mut app, &ctx, |app| app.current_image.is_some());
+        assert_eq!(app.current_path.as_ref(), Some(&c));
+        assert!(app.bad_file.is_none());
+    }
+
+    #[test]
+    fn a_rating_says_what_it_did_and_is_on_disk() {
+        let dir = TempDir::new("ratetoast");
+        let path = dir.jpeg("a.jpg");
+        let (mut app, ctx) = app_on(&path);
+
+        frame(&mut app, &ctx, vec![press(Key::Num3, Modifiers::NONE)]);
+
+        assert_eq!(
+            app.toast.current.as_ref().map(|(t, _)| t.as_str()),
+            Some("Rated \u{2605}\u{2605}\u{2605}")
+        );
+        assert_eq!(
+            xmp::read_labels(&path).rating,
+            3,
+            "read back from the sidecar"
+        );
+    }
+
+    #[test]
+    fn a_finished_delete_says_so() {
+        let dir = TempDir::new("deltoast");
+        let path = dir.jpeg("a.jpg");
+        let (mut app, ctx) = app_on(&path);
+        app.msg_tx
+            .send(Msg::Deleted {
+                path,
+                result: Ok(()),
+            })
+            .unwrap();
+        pump_until(&mut app, &ctx, |app| app.toast.current.is_some());
+        assert_eq!(app.toast.current.unwrap().0, "Moved to the Recycle Bin");
+    }
+
+    /// A JPEG that was only rotated says its pixels were left alone.
+    #[test]
+    fn a_lossless_rotation_save_says_how_it_saved() {
+        let dir = TempDir::new("rottoast");
+        let path = dir.jpeg("a.jpg");
+        let (mut app, ctx) = app_on(&path);
+        app.enter_editor(&ctx);
+        let p = EditParams {
+            rotation: EditParams::default().rotation.cw(),
+            ..EditParams::default()
+        };
+        app.editor_state.as_mut().unwrap().commit(p);
+
+        assert!(app.save_inplace());
+
+        let said = app.toast.current.as_ref().unwrap().0.clone();
+        assert!(said.contains("EXIF"), "{said}");
+    }
+
+    /// With nothing open the window says what to do, and E says why it
+    /// does nothing.
+    #[test]
+    fn with_nothing_open_the_app_says_what_to_do() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut app = App::new(tx, rx);
+        let ctx = egui::Context::default();
+        ui::install_fonts(&ctx);
+
+        let text = painted_text(&mut app, &ctx);
+        assert!(text.iter().any(|t| t == "Drop an image here"), "{text:?}");
+        assert!(text.iter().any(|t| t == "or press Ctrl+O"), "{text:?}");
+
+        frame(&mut app, &ctx, vec![press(Key::E, Modifiers::NONE)]);
+        assert!(!app.in_editor());
+        assert_eq!(
+            app.toast.current.as_ref().map(|(t, _)| t.as_str()),
+            Some("Open an image to edit it")
+        );
     }
 
     #[test]

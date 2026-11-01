@@ -35,10 +35,8 @@ tiles. The viewer keeps its zero-chrome canvas. The editor rail is reorganised a
 
 ## The viewer
 
-6. **Where am I, what happened.** A 30 px HUD that fades in on navigation or mouse move (name, `12 / 129`,
-   size, stars, label) and out after 1.5 s; one toast lane for real outcomes ("Saved — rotation stored in EXIF",
-   "Moved to the Recycle Bin", "Label: Green"); a loading bar after 150 ms; a bad file shows a card instead of a
-   modal, and browsing continues; an empty state with *Drop an image here* and Ctrl+O.
+6. ~~**Where am I, what happened.**~~ Done — HUD, toast lane, loading bar, bad-file card, empty state with
+   Ctrl+O; see settled-decisions.md.
 
 ## Judging an edit
 

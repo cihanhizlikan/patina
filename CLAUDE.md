@@ -14,6 +14,7 @@ loader, navigator and path rules.
 - `src/exif.rs` — EXIF fields for the metadata panel. `src/xmp.rs` — rating and colour-label sidecars.
 - `src/orientation.rs` — saving a JPEG rotation or flip as its EXIF orientation, byte-exact otherwise.
 - `src/save.rs` — every other save: re-encoding, with the source's EXIF and ICC profile carried across.
+- `src/hud.rs` — the viewer's HUD, toast lane, loading bar, bad-file card and empty state.
 - `src/keymap.rs` — every keyboard shortcut, one table for the handler and the help.
 - `src/logging.rs` — the `log` sink: stderr and the per-user `patina.log`.
 - `src/assets/` — embedded SVG icons and the Inter fonts. `patina_setup.iss` — Inno Setup installer.

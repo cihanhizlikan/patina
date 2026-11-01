@@ -163,6 +163,26 @@ slider step once per press; a key repeat continues the step.
 that is the last frame shown, which lags the params during the slider debounce and is the hovered preset while one
 is previewed (`a_save_writes_the_committed_edit_not_the_last_frame`).
 
+## The viewer says where you are and what happened, then gets out of the way (2026-11-02)
+All of it is `src/hud.rs`; timing is plain functions of `Instant`, tested without a window.
+**The HUD** is a 30 px strip over the top of the photo — name, `12 / 129`, pixel size, stars, label — shown on
+navigation or a mouse move over the canvas, held 1.5 s, faded over 0.25 s. It **replaces the always-on rating
+overlay**: a rating is still seen when it changes (HUD and toast) and on any mouse move, and the photo is otherwise
+bare. A slideshow's own advance does not raise it.
+**One toast lane** for outcomes the user caused: saves (and *how* — "orientation stored in EXIF, pixels untouched"
+for a lossless JPEG rotation), Save As, the Recycle Bin, rename, rating, label. A new toast replaces the one shown.
+**Failures to write stay modal** — a save, delete, sidecar or rename that failed needs acknowledging; a toast that
+fades would let it pass unseen.
+**A file that will not decode is a card, not a modal.** It becomes the current file (title, `3 / 5`, Delete and
+the arrows all work on it) and its reason shows in place of the image. Before, a modal stopped browsing, and
+`loading_path` was never cleared, so the file could not be tried again. A late failure for a file the user has
+already moved past is dropped.
+**The loading bar** shows only after 150 ms: a quicker load flashing a bar reads as a glitch.
+**With nothing open** the canvas offers *Drop an image here*, Ctrl+O and Open…, and outlines itself while files are
+dragged over. **The editor needs an image**: with none, E says "Open an image to edit it" rather than opening a
+rail of controls with nothing to act on. What would move this: Patina being launched mainly to edit (an
+"Edit with Patina" verb), where E — or launch — opening a file picker would earn its place.
+
 ## Paths are used as given — no `canonicalize` (inherited)
 `std::fs::canonicalize` on Windows returns a verbatim `\\?\C:\…` path, which breaks paths handed over by
 archivers. **Build-enforced**: both `canonicalize` functions are banned in `clippy.toml`, and

@@ -39,6 +39,7 @@ pub enum Action {
     Fullscreen,
     Help,
     Info,
+    Open,
     Delete,
     Quit,
     Undo,
@@ -112,6 +113,12 @@ pub const KEYMAP: &[Binding] = &[
         keys: &[(NO, Key::E)],
         action: Action::EnterEditor,
         what: "Open the editor",
+    },
+    Binding {
+        mode: Mode::Viewer,
+        keys: &[(CTRL, Key::O)],
+        action: Action::Open,
+        what: "Open an image",
     },
     Binding {
         mode: Mode::Viewer,
