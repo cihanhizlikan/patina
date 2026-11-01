@@ -162,7 +162,6 @@ struct T {
     row_y: f32,    // vertical row padding
     gap: f32,      // standard gap between siblings
     gap_t: f32,    // tight gap (within a button group)
-    label_w: f32,  // width of FILE/HISTORY label column
     btn_h: f32,    // button height
     slider_h: f32, // slider row height
     slbl_w: f32,   // slider label column width
@@ -170,8 +169,6 @@ struct T {
     radius: f32,   // button/tile corner radius
     dot: f32,      // section dot radius
     icon: f32,     // icon size (square)
-    icon_chk: f32, // check icon size inside active badge
-    badge: f32,    // preset active-badge diameter
     caption: f32,  // section heads and sub-labels: the small type step
     body: f32,     // buttons, slider labels and values
     rail_w: f32,   // computed rail width this frame
@@ -188,7 +185,6 @@ impl T {
             row_y: (u * 0.778).max(11.0),
             gap: (u * 0.556).max(8.0),
             gap_t: (u * 0.444).max(6.0),
-            label_w: (u * 3.555).max(56.0),
             btn_h: (u * 1.778).max(24.0),
             slider_h: (u * 1.778).max(24.0),
             slbl_w: (u * 4.444).max(64.0),
@@ -196,8 +192,6 @@ impl T {
             radius: (u * 0.333).max(4.0),
             dot: (u * 0.500).max(7.0),
             icon: (u * 0.778).max(12.0),
-            icon_chk: (u * 0.611).max(9.0),
-            badge: (u * 1.000).max(14.0),
             caption: (u * 0.583).max(CAPTION - 1.5),
             body: (u * 0.667).max(CAPTION),
             rail_w: rail_width(w),
@@ -260,36 +254,6 @@ pub fn install_fonts(ctx: &Context) {
     ctx.set_fonts(fonts);
 }
 
-// ── Preset group order (§7, README) ──────────────────────────────────────────
-
-struct PresetGroup {
-    name: &'static str,
-    items: &'static [Preset],
-}
-
-static PRESET_GROUPS: &[PresetGroup] = &[
-    PresetGroup {
-        name: "QUICK FIXES",
-        items: &[Preset::AutoEnhance, Preset::Vivid, Preset::Punch],
-    },
-    PresetGroup {
-        name: "BRIGHT & AIRY",
-        items: &[Preset::CleanBright, Preset::SoftGlow],
-    },
-    PresetGroup {
-        name: "FILM",
-        items: &[Preset::WarmFilm, Preset::GoldenHour, Preset::FadedMatte],
-    },
-    PresetGroup {
-        name: "DRAMATIC",
-        items: &[Preset::Moody, Preset::Chrome],
-    },
-    PresetGroup {
-        name: "BLACK & WHITE",
-        items: &[Preset::Bw, Preset::BwContrast],
-    },
-];
-
 // ── Icon cache ────────────────────────────────────────────────────────────────
 
 /// The pixel size rail icons are drawn at now. Rasterising the SVGs at their
@@ -312,7 +276,6 @@ pub struct Icons {
     pub flip_h: TextureHandle,
     pub flip_v: TextureHandle,
     pub chevron: TextureHandle,
-    pub check: TextureHandle,
 }
 
 impl Icons {
@@ -359,53 +322,13 @@ impl Icons {
                 "ic_chevron",
                 include_bytes!("assets/icons/chevron_down.svg"),
             ),
-            check: load_svg(ctx, "ic_check", include_bytes!("assets/icons/check.svg")),
         }
-    }
-}
-
-// ── Thumbnail cache ───────────────────────────────────────────────────────────
-
-pub struct ThumbCache {
-    handles: Vec<Option<TextureHandle>>,
-}
-
-impl Default for ThumbCache {
-    fn default() -> Self {
-        Self {
-            handles: vec![None; Preset::ALL.len()],
-        }
-    }
-}
-
-impl ThumbCache {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Upload any not-yet-uploaded thumbnails. Safe to call every frame.
-    pub fn upload(&mut self, ctx: &Context) {
-        for (i, slot) in self.handles.iter_mut().enumerate() {
-            if slot.is_some() {
-                continue;
-            }
-            let bytes = crate::preset_thumbs::thumb_svg_for_index(i);
-            let img = match egui_extras::image::load_svg_bytes(bytes) {
-                Ok(img) => img,
-                Err(_) => egui::ColorImage::new([108, 81], SURFACE_SUNKEN),
-            };
-            *slot = Some(ctx.load_texture(format!("pt_{i}"), img, TextureOptions::LINEAR));
-        }
-    }
-
-    fn get(&self, i: usize) -> Option<&TextureHandle> {
-        self.handles.get(i)?.as_ref()
     }
 }
 
 // ── Panel action ──────────────────────────────────────────────────────────────
 
-/// Intentions signalled from the UI to the app in a single frame.
+/// What the rail asks the app to do this frame.
 #[derive(Default)]
 pub struct PanelAction {
     pub save: bool,
@@ -417,7 +340,13 @@ pub struct PanelAction {
     pub rot_ccw: bool,
     pub flip_h: bool,
     pub flip_v: bool,
+    /// A change that is a new undo step.
     pub new_params: Option<EditParams>,
+    /// A change that continues the slider drag whose first change was the
+    /// current undo step: one drag is one step, not one per frame.
+    pub drag_params: Option<EditParams>,
+    /// The preset chip under the pointer, previewed on the canvas.
+    pub hover_preset: Option<Preset>,
 }
 
 // ── Global egui style (called every frame from main.rs) ───────────────────────
@@ -441,176 +370,9 @@ pub fn apply_panel_style(ctx: &Context) {
     // Scrollbar
     style.spacing.scroll.bar_width = 8.0;
     style.spacing.scroll.handle_min_length = 24.0;
-    style.visuals.extreme_bg_color = Color32::TRANSPARENT;
+    // Text fields, and a scroll track while it is shown, sit sunken.
+    style.visuals.extreme_bg_color = SURFACE_SUNKEN;
     ctx.set_style(style);
-}
-
-// ── Panel entry point ─────────────────────────────────────────────────────────
-
-pub fn draw_panel(
-    ctx: &Context,
-    params: &EditParams,
-    can_undo: bool,
-    can_redo: bool,
-    // Save is the primary action only when there is something to save; on
-    // an untouched image it was lit green and meant nothing.
-    dirty: bool,
-    thumbs: &ThumbCache,
-    icons: &Icons,
-    open_sections: &mut [bool; 6],
-    metadata: Option<&crate::exif::ImageMetadata>,
-) -> PanelAction {
-    let mut action = PanelAction::default();
-    let mut p = params.clone();
-    let t = T::new(ctx);
-
-    egui::SidePanel::right("editor_rail")
-        .resizable(false)
-        .exact_width(t.rail_w)
-        .frame(Frame::none().fill(SURFACE).stroke(Stroke::new(1.0, BORDER)))
-        .show(ctx, |ui| {
-            ui.set_width(t.rail_w);
-
-            header_row(ui, &t, "FILE", |ui| {
-                if Button::new(
-                    if dirty {
-                        Kind::Primary
-                    } else {
-                        Kind::Secondary
-                    },
-                    "Save",
-                )
-                .icon(Some(&icons.save))
-                .size(t.btn())
-                .show(ui)
-                .clicked()
-                {
-                    action.save = true;
-                }
-                if Button::new(Kind::Secondary, "Save As")
-                    .icon(Some(&icons.save_as))
-                    .size(t.btn())
-                    .show(ui)
-                    .clicked()
-                {
-                    action.save_as = true;
-                }
-            });
-
-            header_row(ui, &t, "HISTORY", |ui| {
-                // When the available width is too narrow for all three labelled buttons,
-                // drop the text labels and show icons only. This prevents overlap at any
-                // panel width including maximised-window narrow states.
-                let avail = ui.available_width();
-                let labels = if avail >= 230.0 {
-                    ("Undo", "Redo", "Reset")
-                } else {
-                    ("", "", "")
-                };
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if Button::new(Kind::Danger, labels.2)
-                        .icon(Some(&icons.reset))
-                        .size(t.btn())
-                        .show(ui)
-                        .clicked()
-                    {
-                        action.reset_all = true;
-                    }
-                    ui.add_enabled_ui(can_redo, |ui| {
-                        if Button::new(Kind::Secondary, labels.1)
-                            .icon(Some(&icons.redo))
-                            .size(t.btn())
-                            .show(ui)
-                            .clicked()
-                        {
-                            action.redo = true;
-                        }
-                    });
-                    ui.add_enabled_ui(can_undo, |ui| {
-                        if Button::new(Kind::Secondary, labels.0)
-                            .icon(Some(&icons.undo))
-                            .size(t.btn())
-                            .show(ui)
-                            .clicked()
-                        {
-                            action.undo = true;
-                        }
-                    });
-                });
-            });
-
-            hairline(ui);
-
-            ScrollArea::vertical()
-                .auto_shrink([false; 2])
-                .drag_to_scroll(false)
-                .show(ui, |ui| {
-                    ui.set_width(t.rail_w);
-                    ui.spacing_mut().item_spacing = Vec2::ZERO;
-
-                    let mut params_changed = false;
-
-                    if section(ui, &t, icons, "PRESETS", &mut open_sections[0]) {
-                        if let Some(new_preset) = draw_presets(ui, &t, params, thumbs, icons) {
-                            p.preset = new_preset;
-                            params_changed = true;
-                        }
-                    }
-
-                    if section(ui, &t, icons, "TRANSFORM", &mut open_sections[1]) {
-                        // draw_transform returns true when the scale slider changed;
-                        // rotation/flip set action flags directly and are handled separately.
-                        if draw_transform(ui, &t, icons, &mut p, &mut action) {
-                            params_changed = true;
-                        }
-                    }
-
-                    if section(ui, &t, icons, "EXIF / IPTC", &mut open_sections[2]) {
-                        draw_exif_section(ui, &t, metadata);
-                    }
-
-                    if section(ui, &t, icons, "TONE", &mut open_sections[3]) {
-                        params_changed |= draw_sliders(
-                            ui,
-                            &t,
-                            &mut [
-                                SD::bipolar("Exposure", &mut p.exposure, -2.0..=2.0),
-                                SD::bipolar("Highlights", &mut p.highlights, -1.0..=1.0),
-                                SD::bipolar("Shadows", &mut p.shadows, -1.0..=1.0),
-                                SD::bipolar("Brightness", &mut p.brightness, -1.0..=1.0),
-                                SD::bipolar("Contrast", &mut p.contrast, -1.0..=1.0),
-                            ],
-                        );
-                    }
-
-                    if section(ui, &t, icons, "COLOR", &mut open_sections[4]) {
-                        params_changed |= draw_sliders(
-                            ui,
-                            &t,
-                            &mut [
-                                SD::bipolar("Saturation", &mut p.saturation, -1.0..=1.0),
-                                SD::bipolar("Vibrance", &mut p.vibrance, -1.0..=1.0),
-                            ],
-                        );
-                    }
-
-                    if section(ui, &t, icons, "DETAIL", &mut open_sections[5]) {
-                        params_changed |= draw_sliders(
-                            ui,
-                            &t,
-                            &mut [SD::unipolar("Sharpen", &mut p.sharpen, 0.0..=1.0)],
-                        );
-                    }
-
-                    // Single clone: only after all sections have had a chance to mutate p.
-                    if params_changed {
-                        action.new_params = Some(p.clone());
-                    }
-                });
-        });
-
-    action
 }
 
 // ── Button ────────────────────────────────────────────────────────────────────
@@ -798,104 +560,170 @@ fn btn_colors(kind: Kind, state: BtnState, selected: bool) -> (Color32, Color32,
     }
 }
 
-// ── Structural layout helpers ─────────────────────────────────────────────────
+// ── Panel entry point ─────────────────────────────────────────────────────────
 
-/// FILE / HISTORY rows: faint dot + fixed label + inline buttons, same height as sections.
-fn header_row(ui: &mut Ui, t: &T, label: &str, add_buttons: impl FnOnce(&mut Ui)) {
-    let row_h = t.btn_h + t.row_y * 2.0;
-    let avail_w = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(avail_w, row_h), Sense::hover());
-    let cy = rect.center().y;
+/// What the rail needs to draw itself.
+pub struct PanelInput<'a> {
+    pub params: &'a EditParams,
+    pub can_undo: bool,
+    pub can_redo: bool,
+    /// Unsaved edits: Save is the primary action only then. On an untouched
+    /// image it was lit green and meant nothing.
+    pub dirty: bool,
+    pub icons: &'a Icons,
+}
 
-    let dot_cx = rect.min.x + t.row_x + t.dot;
-    ui.painter()
-        .circle_filled(egui::pos2(dot_cx, cy), t.dot * 0.5, TEXT_3);
-    ui.painter().text(
-        egui::pos2(dot_cx + t.dot + t.gap_t, cy),
-        egui::Align2::LEFT_CENTER,
-        label,
-        egui::FontId::proportional(t.caption),
-        TEXT_1,
-    );
+/// The editor rail, organised around the edit: one toolbar, then presets,
+/// geometry and every slider, all open — nothing to expand, and it fits a
+/// 1200 px window without scrolling.
+pub fn draw_panel(ctx: &Context, input: PanelInput<'_>) -> PanelAction {
+    let PanelInput {
+        params,
+        can_undo,
+        can_redo,
+        dirty,
+        icons,
+    } = input;
+    let mut action = PanelAction::default();
+    let t = T::new(ctx);
 
-    let btn_x = rect.min.x + t.row_x + t.dot * 2.0 + t.gap_t + t.label_w + t.gap_t;
-    let btn_rect = Rect::from_min_max(
-        egui::pos2(btn_x, rect.min.y),
-        egui::pos2(rect.max.x - t.row_x, rect.max.y),
-    );
-    ui.allocate_ui_at_rect(btn_rect, |ui| {
+    egui::SidePanel::right("editor_rail")
+        .resizable(false)
+        .exact_width(t.rail_w)
+        .frame(Frame::none().fill(SURFACE).stroke(Stroke::new(1.0, BORDER)))
+        .show(ctx, |ui| {
+            ui.set_width(t.rail_w);
+            toolbar(ui, &t, icons, can_undo, can_redo, dirty, &mut action);
+            hairline(ui);
+
+            ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .drag_to_scroll(false)
+                .show(ui, |ui| {
+                    Frame::none()
+                        .inner_margin(Margin::symmetric(t.row_x, t.row_y * 0.5))
+                        .show(ui, |ui| {
+                            ui.set_width(t.rail_w - 2.0 * t.row_x);
+                            ui.spacing_mut().item_spacing = Vec2::new(t.gap_t, t.gap_t);
+                            let mut p = params.clone();
+                            presets(ui, &t, &mut p, &mut action);
+                            geometry(ui, &t, icons, &p, &mut action);
+                            for group in GROUPS {
+                                slider_group(ui, &t, group, &mut p, &mut action);
+                            }
+                        });
+                });
+        });
+    action
+}
+
+/// Undo and Redo on the left; Save As, Save and its menu on the right.
+fn toolbar(
+    ui: &mut Ui,
+    t: &T,
+    icons: &Icons,
+    can_undo: bool,
+    can_redo: bool,
+    dirty: bool,
+    action: &mut PanelAction,
+) {
+    let h = 44.0_f32.max(t.btn_h + 2.0 * t.gap_t);
+    let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), h), Sense::hover());
+    let inner = row.shrink2(Vec2::new(t.row_x, 0.0));
+    ui.allocate_ui_at_rect(inner, |ui| {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = t.gap_t;
-            add_buttons(ui);
+            ui.add_enabled_ui(can_undo, |ui| {
+                let undo = Button::new(Kind::Secondary, "")
+                    .icon(Some(&icons.undo))
+                    .size(t.btn())
+                    .show(ui)
+                    .on_hover_text("Undo  Ctrl+Z");
+                action.undo |= undo.clicked();
+            });
+            ui.add_enabled_ui(can_redo, |ui| {
+                let redo = Button::new(Kind::Secondary, "")
+                    .icon(Some(&icons.redo))
+                    .size(t.btn())
+                    .show(ui)
+                    .on_hover_text("Redo  Ctrl+Shift+Z");
+                action.redo |= redo.clicked();
+            });
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = t.gap_t;
+                let kind = if dirty {
+                    Kind::Primary
+                } else {
+                    Kind::Secondary
+                };
+                let more = Button::new(kind, "")
+                    .icon(Some(&icons.chevron))
+                    .size(t.btn())
+                    .show(ui)
+                    .on_hover_text("More save actions");
+                let save = Button::new(kind, "Save")
+                    .icon(Some(&icons.save))
+                    .size(t.btn())
+                    .show(ui)
+                    .on_hover_text("Save  Ctrl+S");
+                action.save |= save.clicked();
+                let save_as = Button::new(Kind::Secondary, "Save As")
+                    .icon(Some(&icons.save_as))
+                    .size(t.btn())
+                    .show(ui)
+                    .on_hover_text("Save As  Ctrl+Shift+S");
+                action.save_as |= save_as.clicked();
+
+                let menu = ui.make_persistent_id("save_menu");
+                if more.clicked() {
+                    ui.memory_mut(|m| m.toggle_popup(menu));
+                }
+                egui::popup::popup_below_widget(ui, menu, &more, |ui| {
+                    ui.set_min_width(170.0);
+                    let reset = Button::new(Kind::Danger, "Reset all edits")
+                        .icon(Some(&icons.reset))
+                        .size(t.btn())
+                        .show(ui);
+                    if reset.clicked() {
+                        action.reset_all = true;
+                        ui.memory_mut(|m| m.close_popup());
+                    }
+                });
+            });
         });
     });
 }
 
-/// Collapsible section header with spruce dot, title, chevron. Returns `true` when open.
-fn section(ui: &mut Ui, t: &T, icons: &Icons, title: &str, open: &mut bool) -> bool {
-    let row_h = t.btn_h + t.row_y * 2.0;
-    let avail_w = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(avail_w, row_h), Sense::click());
-    if resp.clicked() {
-        *open = !*open;
-    }
-
-    let pt = ui.painter();
-    let cy = rect.center().y;
-
-    if resp.hovered() {
-        pt.rect_filled(rect, Rounding::ZERO, RAISED);
-    }
-
-    // Spruce dot with halo
-    let cx = rect.min.x + t.row_x + t.dot;
-    pt.circle_filled(egui::pos2(cx, cy), t.dot * 0.83, ACCENT_SOFT);
-    pt.circle_filled(egui::pos2(cx, cy), t.dot * 0.50, ACCENT);
-
-    pt.text(
-        egui::pos2(cx + t.dot * 1.5 + t.gap_t * 0.5, cy),
+/// A group's heading. Its dot appears only when something in the group is
+/// changed, and clicking it resets the group; before, every heading carried
+/// a glowing dot that meant nothing. Returns whether the dot was clicked.
+fn group_head(ui: &mut Ui, t: &T, title: &str, modified: bool) -> bool {
+    ui.add_space(t.gap_t);
+    let (row, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), t.caption * 2.0),
+        Sense::hover(),
+    );
+    ui.painter().text(
+        row.left_center(),
         egui::Align2::LEFT_CENTER,
-        title,
+        title.to_uppercase(),
         egui::FontId::proportional(t.caption),
-        TEXT_1,
+        TEXT_3,
     );
-
-    // Chevron: image when open (▾), line segments when closed (›)
-    let ic_sz = Vec2::splat(t.icon);
-    let ic_rect = Rect::from_min_size(
-        egui::pos2(rect.max.x - t.row_x - t.icon, cy - t.icon * 0.5),
-        ic_sz,
-    );
-
-    if *open {
-        pt.image(
-            icons.chevron.id(),
-            ic_rect,
-            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            TEXT_2,
-        );
-    } else {
-        let xi = ic_rect.min.x + ic_sz.x * 0.3;
-        let xo = ic_rect.max.x - ic_sz.x * 0.3;
-        let mk = Stroke::new(1.5, TEXT_2);
-        pt.line_segment(
-            [
-                egui::pos2(xi, ic_rect.min.y + ic_sz.y * 0.2),
-                egui::pos2(xo, ic_rect.center().y),
-            ],
-            mk,
-        );
-        pt.line_segment(
-            [
-                egui::pos2(xo, ic_rect.center().y),
-                egui::pos2(xi, ic_rect.max.y - ic_sz.y * 0.2),
-            ],
-            mk,
-        );
+    if !modified {
+        return false;
     }
-
-    pt.hline(rect.x_range(), rect.min.y, Stroke::new(1.0, BORDER));
-    *open
+    let dot = Rect::from_center_size(
+        egui::pos2(row.max.x - t.dot, row.center().y),
+        Vec2::splat(t.dot * 2.0),
+    );
+    let resp = ui
+        .interact(dot, ui.make_persistent_id(("reset", title)), Sense::click())
+        .on_hover_text(format!("Reset {}", title.to_lowercase()));
+    let c = if resp.hovered() { ACCENT_HOVER } else { ACCENT };
+    ui.painter().circle_filled(dot.center(), t.dot * 0.4, c);
+    resp.clicked()
 }
 
 fn hairline(ui: &mut Ui) {
@@ -905,376 +733,342 @@ fn hairline(ui: &mut Ui) {
     ui.add_space(1.0);
 }
 
-// ── Preset grid ───────────────────────────────────────────────────────────────
+// ── Presets ───────────────────────────────────────────────────────────────────
 
-fn draw_presets(
-    ui: &mut Ui,
-    t: &T,
-    params: &EditParams,
-    thumbs: &ThumbCache,
-    icons: &Icons,
-) -> Option<Preset> {
-    let mut selected = None;
-    let cols = 3usize;
-    let spacing = t.gap;
-    let tile_w =
-        ((t.rail_w - t.row_x * 2.0 - spacing * (cols as f32 - 1.0)) / cols as f32).max(88.0);
-    let thumb_h = tile_w * 0.75;
-    let lbl_h = t.row_y * 0.5 + t.body + t.row_y * 0.5;
-    let tile_h = thumb_h + lbl_h;
-
-    for (g_idx, grp) in PRESET_GROUPS.iter().enumerate() {
-        ui.add_space(if g_idx == 0 {
-            t.row_y * 0.5
-        } else {
-            t.u * 0.78
-        });
-        Frame::none()
-            .inner_margin(Margin {
-                left: t.row_x,
-                ..Margin::ZERO
-            })
-            .show(ui, |ui| {
-                ui.label(
-                    RichText::new(grp.name)
-                        .color(TEXT_3)
-                        .size(t.caption)
-                        .strong(),
-                );
-            });
-        ui.add_space(t.gap_t);
-
-        for chunk in grp.items.chunks(cols) {
-            let row_top = ui.cursor().top();
-            let row_left = ui.cursor().left() + t.row_x;
-            // §0: allocate_rect advances the cursor — no add_space after
-            ui.allocate_rect(
-                Rect::from_min_size(
-                    egui::pos2(ui.cursor().left(), row_top),
-                    Vec2::new(t.rail_w, tile_h),
-                ),
-                Sense::hover(),
-            );
-
-            for (col_i, &preset) in chunk.iter().enumerate() {
-                let idx = Preset::ALL.iter().position(|&p| p == preset).unwrap_or(0);
-                let active = params.preset == preset;
-                let tile_x = row_left + col_i as f32 * (tile_w + spacing);
-                let tile =
-                    Rect::from_min_size(egui::pos2(tile_x, row_top), Vec2::new(tile_w, tile_h));
-                let resp =
-                    ui.interact(tile, egui::Id::new(("pt", preset as usize)), Sense::click());
-                let p = ui.painter();
-
-                // Tile background: subtle hover tint (same toggle logic as flip buttons)
-                let tile_bg = if resp.hovered() && !active {
-                    ACCENT_SOFT
-                } else {
-                    SURFACE_SUNKEN
-                };
-                p.rect_filled(tile, Rounding::same(t.radius), tile_bg);
-
-                // Thumbnail image
-                let thumb = Rect::from_min_size(tile.min, Vec2::new(tile_w, thumb_h));
-                if let Some(tex) = thumbs.get(idx) {
-                    p.image(
-                        tex.id(),
-                        thumb,
-                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-                }
-
-                // Active badge: spruce circle with check icon
-                if active {
-                    let badge_r = t.badge * 0.5;
-                    let off = t.u * 0.33;
-                    let bc = egui::pos2(thumb.max.x - off - badge_r, thumb.min.y + off + badge_r);
-                    p.circle_filled(bc, badge_r, ACCENT);
-                    p.image(
-                        icons.check.id(),
-                        Rect::from_center_size(bc, Vec2::splat(t.icon_chk)),
-                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        ON_ACCENT,
-                    );
-                }
-
-                // Label strip
-                let lbl_rect = Rect::from_min_size(
-                    egui::pos2(tile.min.x, tile.min.y + thumb_h),
-                    Vec2::new(tile_w, lbl_h),
-                );
-                p.rect_filled(
-                    lbl_rect,
-                    Rounding {
-                        nw: 0.0,
-                        ne: 0.0,
-                        sw: t.radius,
-                        se: t.radius,
-                    },
-                    SURFACE_SUNKEN,
-                );
-                p.text(
-                    lbl_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    preset.label(),
-                    egui::FontId::proportional(t.body),
-                    if active || resp.hovered() {
-                        ACCENT
-                    } else {
-                        TEXT_1
-                    },
-                );
-
-                // Border: solid accent when active, spruce when hovered, dim when rest
-                let (sc, sw) = if active {
-                    (ACCENT, 1.5)
-                } else if resp.hovered() {
-                    (ACCENT_LINE, 1.0)
-                } else {
-                    (BORDER, 1.0)
-                };
-                p.rect_stroke(tile, Rounding::same(t.radius), Stroke::new(sw, sc));
-
-                if resp.clicked() {
-                    // Click active preset → deselect; click inactive → select
-                    selected = Some(if active { Preset::None } else { preset });
-                }
+/// Text chips in the order of their families. A chip previews on the canvas
+/// while hovered; a click makes it one undo step, and a click on the chosen
+/// one goes back to none. They replace twelve thumbnail tiles that were all
+/// the same placeholder picture.
+fn presets(ui: &mut Ui, t: &T, p: &mut EditParams, action: &mut PanelAction) {
+    if group_head(ui, t, "Presets", p.preset != Preset::None) {
+        p.preset = Preset::None;
+        action.new_params = Some(p.clone());
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::splat(t.gap_t);
+        for &preset in PRESET_ORDER {
+            let chosen = p.preset == preset;
+            let resp = Button::new(Kind::Secondary, preset.label())
+                .size(BtnSize {
+                    font: t.body,
+                    ..BtnSize::CHIP
+                })
+                .selected(chosen)
+                .show(ui);
+            if resp.hovered() && !chosen {
+                action.hover_preset = Some(preset);
+            }
+            if resp.clicked() {
+                p.preset = if chosen { Preset::None } else { preset };
+                action.new_params = Some(p.clone());
+                action.hover_preset = None;
             }
         }
+    });
+}
+
+/// Quick fixes, bright, film, dramatic, black and white.
+const PRESET_ORDER: &[Preset] = &[
+    Preset::AutoEnhance,
+    Preset::Vivid,
+    Preset::Punch,
+    Preset::CleanBright,
+    Preset::SoftGlow,
+    Preset::WarmFilm,
+    Preset::GoldenHour,
+    Preset::FadedMatte,
+    Preset::Moody,
+    Preset::Chrome,
+    Preset::Bw,
+    Preset::BwContrast,
+];
+
+// ── Geometry ──────────────────────────────────────────────────────────────────
+
+/// Rotate and flip as one row of four icon buttons.
+fn geometry(ui: &mut Ui, t: &T, icons: &Icons, p: &EditParams, action: &mut PanelAction) {
+    let changed = p.rotation != crate::editor::Rotation::R0 || p.flip_h || p.flip_v;
+    if group_head(ui, t, "Geometry", changed) {
+        let mut q = p.clone();
+        q.rotation = crate::editor::Rotation::R0;
+        q.flip_h = false;
+        q.flip_v = false;
+        action.new_params = Some(q);
     }
-    ui.add_space(t.row_y);
-    selected
+    let w = (ui.available_width() - 3.0 * t.gap_t) / 4.0;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = t.gap_t;
+        let mut btn = |icon: &TextureHandle, tip: &str, on: bool| {
+            Button::new(Kind::Secondary, "")
+                .icon(Some(icon))
+                .size(t.btn())
+                .width(w)
+                .selected(on)
+                .show(ui)
+                .on_hover_text(tip)
+                .clicked()
+        };
+        action.rot_ccw |= btn(&icons.rotate_left, "Rotate left", false);
+        action.rot_cw |= btn(&icons.rotate_right, "Rotate right", false);
+        action.flip_h |= btn(&icons.flip_h, "Flip horizontally", p.flip_h);
+        action.flip_v |= btn(&icons.flip_v, "Flip vertically", p.flip_v);
+    });
 }
 
-// ── Transform section ─────────────────────────────────────────────────────────
+// ── Sliders ───────────────────────────────────────────────────────────────────
 
-fn draw_transform(
-    ui: &mut Ui,
-    t: &T,
-    icons: &Icons,
-    p: &mut EditParams,
-    action: &mut PanelAction,
-) -> bool {
-    let btn_w = (t.rail_w - t.row_x * 2.0 - t.gap) / 2.0;
-
-    Frame::none()
-        .inner_margin(Margin {
-            left: t.row_x,
-            right: t.row_x,
-            top: t.row_y * 0.5,
-            bottom: 0.0,
-        })
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = Vec2::new(t.gap, t.gap);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = t.gap;
-                if Button::new(Kind::Secondary, "Rotate left")
-                    .icon(Some(&icons.rotate_left))
-                    .size(t.btn())
-                    .width(btn_w)
-                    .show(ui)
-                    .clicked()
-                {
-                    action.rot_ccw = true;
-                }
-                if Button::new(Kind::Secondary, "Rotate right")
-                    .icon(Some(&icons.rotate_right))
-                    .size(t.btn())
-                    .width(btn_w)
-                    .show(ui)
-                    .clicked()
-                {
-                    action.rot_cw = true;
-                }
-            });
-            ui.add_space(t.gap);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = t.gap;
-                if Button::new(Kind::Secondary, "Flip H")
-                    .icon(Some(&icons.flip_h))
-                    .size(t.btn())
-                    .selected(p.flip_h)
-                    .width(btn_w)
-                    .show(ui)
-                    .clicked()
-                {
-                    action.flip_h = true;
-                }
-                if Button::new(Kind::Secondary, "Flip V")
-                    .icon(Some(&icons.flip_v))
-                    .size(t.btn())
-                    .selected(p.flip_v)
-                    .width(btn_w)
-                    .show(ui)
-                    .clicked()
-                {
-                    action.flip_v = true;
-                }
-            });
-            ui.add_space(t.gap_t);
-        });
-
-    scale_slider(ui, t, p)
+#[derive(Clone, Copy)]
+enum Field {
+    Exposure,
+    Highlights,
+    Shadows,
+    Brightness,
+    Contrast,
+    Saturation,
+    Vibrance,
+    Sharpen,
 }
 
-fn scale_slider(ui: &mut Ui, t: &T, p: &mut EditParams) -> bool {
-    // Map the nonlinear scale [0.1–1.0–4.0] onto a uniform [0.0–0.5–1.0] slider.
-    let to_slider = |s: f32| {
-        if s <= 1.0 {
-            (s - 0.1) / 0.9 * 0.5
-        } else {
-            0.5 + (s - 1.0) / 3.0 * 0.5
+impl Field {
+    fn of(self, p: &mut EditParams) -> &mut f32 {
+        match self {
+            Field::Exposure => &mut p.exposure,
+            Field::Highlights => &mut p.highlights,
+            Field::Shadows => &mut p.shadows,
+            Field::Brightness => &mut p.brightness,
+            Field::Contrast => &mut p.contrast,
+            Field::Saturation => &mut p.saturation,
+            Field::Vibrance => &mut p.vibrance,
+            Field::Sharpen => &mut p.sharpen,
         }
-    };
-    let to_scale = |v: f32| {
-        if v <= 0.5 {
-            0.1 + (v / 0.5) * 0.9
-        } else {
-            1.0 + ((v - 0.5) / 0.5) * 3.0
-        }
-    };
-
-    let mut sv = to_slider(p.scale);
-    let sv_before = sv;
-
-    Frame::none()
-        .inner_margin(Margin {
-            left: t.row_x,
-            right: t.row_x,
-            top: 0.0,
-            bottom: 0.0,
-        })
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let (_, lr) = ui.allocate_space(Vec2::new(t.slbl_w, t.slider_h));
-                ui.painter().text(
-                    lr.left_center(),
-                    egui::Align2::LEFT_CENTER,
-                    "Scale",
-                    egui::FontId::proportional(t.body),
-                    TEXT_2,
-                );
-                ui.add(
-                    egui::Slider::new(&mut sv, 0.0..=1.0)
-                        .show_value(false)
-                        .clamp_to_range(true),
-                );
-                let (_, vr) = ui.allocate_space(Vec2::new(t.sval_w, t.slider_h));
-                ui.painter().text(
-                    vr.right_center(),
-                    egui::Align2::RIGHT_CENTER,
-                    format!("{:.2}", p.scale),
-                    egui::FontId::proportional(t.body),
-                    TEXT_1,
-                );
-            });
-        });
-
-    if (sv - sv_before).abs() > 1e-5 {
-        p.scale = to_scale(sv);
-        true
-    } else {
-        false
     }
 }
 
-// ── Slider section ────────────────────────────────────────────────────────────
-
-/// Slider definition.
-struct SD<'a> {
+struct SliderDef {
     label: &'static str,
-    value: &'a mut f32,
-    range: std::ops::RangeInclusive<f32>,
-    bipolar: bool,
+    field: Field,
+    lo: f32,
+    hi: f32,
 }
 
-impl<'a> SD<'a> {
-    fn bipolar(
-        label: &'static str,
-        value: &'a mut f32,
-        range: std::ops::RangeInclusive<f32>,
-    ) -> Self {
-        Self {
-            label,
-            value,
-            range,
-            bipolar: true,
-        }
-    }
-    fn unipolar(
-        label: &'static str,
-        value: &'a mut f32,
-        range: std::ops::RangeInclusive<f32>,
-    ) -> Self {
-        Self {
-            label,
-            value,
-            range,
-            bipolar: false,
-        }
+struct Group {
+    title: &'static str,
+    sliders: &'static [SliderDef],
+}
+
+const fn s(label: &'static str, field: Field, lo: f32, hi: f32) -> SliderDef {
+    SliderDef {
+        label,
+        field,
+        lo,
+        hi,
     }
 }
 
-fn draw_sliders(ui: &mut Ui, t: &T, defs: &mut [SD<'_>]) -> bool {
-    let mut changed = false;
-    for def in defs.iter_mut() {
-        let before = *def.value;
-        Frame::none()
-            .inner_margin(Margin {
-                left: t.row_x,
-                right: t.row_x,
-                top: 2.0,
-                bottom: 2.0,
-            })
-            .show(ui, |ui| {
-                ui.set_min_height(t.slider_h);
-                ui.horizontal(|ui| {
-                    let (_, lr) = ui.allocate_space(Vec2::new(t.slbl_w, t.slider_h));
-                    ui.painter().text(
-                        lr.left_center(),
-                        egui::Align2::LEFT_CENTER,
-                        def.label,
-                        egui::FontId::proportional(t.body),
-                        TEXT_2,
-                    );
+/// Every slider, always open. Zero is each one's default.
+const GROUPS: &[Group] = &[
+    Group {
+        title: "Light",
+        sliders: &[
+            s("Exposure", Field::Exposure, -2.0, 2.0),
+            s("Highlights", Field::Highlights, -1.0, 1.0),
+            s("Shadows", Field::Shadows, -1.0, 1.0),
+            s("Brightness", Field::Brightness, -1.0, 1.0),
+            s("Contrast", Field::Contrast, -1.0, 1.0),
+        ],
+    },
+    Group {
+        title: "Color",
+        sliders: &[
+            s("Saturation", Field::Saturation, -1.0, 1.0),
+            s("Vibrance", Field::Vibrance, -1.0, 1.0),
+        ],
+    },
+    Group {
+        title: "Detail",
+        sliders: &[s("Sharpen", Field::Sharpen, 0.0, 1.0)],
+    },
+];
 
-                    let slider = egui::Slider::new(def.value, def.range.clone())
-                        .show_value(false)
-                        .clamp_to_range(true);
-                    let sr = ui.add(slider);
+fn slider_group(ui: &mut Ui, t: &T, g: &Group, p: &mut EditParams, action: &mut PanelAction) {
+    let modified = g.sliders.iter().any(|d| d.field.of(p).abs() > CHANGED);
+    if group_head(ui, t, g.title, modified) {
+        for d in g.sliders {
+            *d.field.of(p) = 0.0;
+        }
+        action.new_params = Some(p.clone());
+    }
+    for d in g.sliders {
+        match slider(ui, t, d.label, d.field.of(p), d.lo, d.hi).0 {
+            Change::None => {}
+            Change::Step => action.new_params = Some(p.clone()),
+            Change::Continue => action.drag_params = Some(p.clone()),
+        }
+    }
+}
 
-                    // Double-click resets to default value.
-                    // We can't use sr.double_clicked() — egui Slider consumes
-                    // click events internally. Instead detect via raw pointer state.
-                    let double_clicked = ui.input(|i| {
-                        i.pointer
-                            .button_double_clicked(egui::PointerButton::Primary)
-                            && i.pointer
-                                .hover_pos()
-                                .map(|p| sr.rect.contains(p))
-                                .unwrap_or(false)
-                    });
-                    if double_clicked {
-                        *def.value = if def.bipolar { 0.0 } else { *def.range.start() };
-                    }
+/// Below this a value counts as its default, zero.
+const CHANGED: f32 = 1e-4;
 
-                    let display = format_slider_value(*def.value, def.bipolar);
-                    let (_, vr) = ui.allocate_space(Vec2::new(t.sval_w, t.slider_h));
-                    ui.painter().text(
-                        vr.right_center(),
-                        egui::Align2::RIGHT_CENTER,
-                        display,
-                        egui::FontId::monospace(t.caption),
-                        TEXT_1,
-                    );
-                });
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Change {
+    None,
+    /// A new undo step.
+    Step,
+    /// Continues the step the current drag or key-repeat began.
+    Continue,
+}
+
+/// One slider row: label, track, value. Drag to set (Shift for a tenth of
+/// the speed), double-click to reset, ←/→ when focused, or click the value
+/// to type one. Painted here rather than egui's Slider so a drag can report
+/// where it begins: egui's reports a change every frame, and each became an
+/// undo step, so one drag filled the whole fifty-step history.
+/// Returns the change and the track's rect.
+fn slider(ui: &mut Ui, t: &T, label: &str, value: &mut f32, lo: f32, hi: f32) -> (Change, Rect) {
+    let id = ui.make_persistent_id(("slider", label));
+    let (row, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), t.slider_h), Sense::hover());
+    let value_r = Rect::from_min_max(egui::pos2(row.max.x - t.sval_w, row.min.y), row.max);
+    let track_r = Rect::from_min_max(
+        egui::pos2(row.min.x + t.slbl_w, row.min.y),
+        egui::pos2(value_r.min.x - t.gap, row.max.y),
+    );
+    let span = hi - lo;
+    let before = *value;
+    let mut continues = false;
+
+    // Drag, double-click and keys on the track.
+    let resp = ui.interact(track_r, id, Sense::click_and_drag());
+    if resp.double_clicked() {
+        *value = 0.0;
+    } else if resp.dragged() {
+        let shift = ui.input(|i| i.modifiers.shift);
+        if shift {
+            *value += resp.drag_delta().x / track_r.width() * span * 0.1;
+        } else if let Some(pos) = resp.interact_pointer_pos() {
+            *value = lo + ((pos.x - track_r.min.x) / track_r.width()).clamp(0.0, 1.0) * span;
+        }
+        // The first change of a drag is the step; the rest continue it.
+        continues = ui.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+    }
+    if resp.has_focus() {
+        ui.input_mut(|i| {
+            let fine = i.modifiers.shift;
+            i.events.retain(|e| match e {
+                egui::Event::Key {
+                    key: k @ (egui::Key::ArrowLeft | egui::Key::ArrowRight),
+                    pressed: true,
+                    repeat,
+                    ..
+                } => {
+                    let step = span / 100.0 * if fine { 0.1 } else { 1.0 };
+                    let dir = if *k == egui::Key::ArrowLeft {
+                        -1.0
+                    } else {
+                        1.0
+                    };
+                    *value += dir * step;
+                    continues |= *repeat;
+                    false
+                }
+                _ => true,
             });
-        if (*def.value - before).abs() > 1e-5 {
-            changed = true;
-        }
+        });
     }
-    changed
+
+    // Typing a value: click it, Enter to set, Esc to leave it.
+    let edit_id = id.with("typed");
+    let typing = ui.data(|d| d.get_temp::<String>(edit_id));
+    if let Some(mut text) = typing {
+        let te = ui.put(
+            value_r,
+            egui::TextEdit::singleline(&mut text)
+                .font(egui::FontId::monospace(t.caption))
+                .horizontal_align(egui::Align::Max),
+        );
+        if !te.has_focus() && !te.lost_focus() {
+            te.request_focus();
+        }
+        let esc = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        if te.lost_focus() || esc {
+            ui.data_mut(|d| d.remove::<String>(edit_id));
+            if !esc {
+                if let Ok(v) = text
+                    .trim()
+                    .replace('\u{2212}', "-")
+                    .replace('+', "")
+                    .parse::<f32>()
+                {
+                    *value = v.clamp(lo, hi);
+                }
+            }
+        } else {
+            ui.data_mut(|d| d.insert_temp(edit_id, text));
+        }
+    } else {
+        let vr = ui
+            .interact(value_r, id.with("value"), Sense::click())
+            .on_hover_text("Click to type a value");
+        if vr.clicked() {
+            ui.data_mut(|d| d.insert_temp(edit_id, format!("{:.2}", *value)));
+        }
+        let modified = value.abs() > CHANGED;
+        ui.painter().text(
+            value_r.right_center(),
+            egui::Align2::RIGHT_CENTER,
+            format_slider_value(*value, lo < 0.0),
+            egui::FontId::monospace(t.caption),
+            if modified { TEXT_1 } else { TEXT_3 },
+        );
+    }
+
+    *value = value.clamp(lo, hi);
+    let change = if (*value - before).abs() <= 1e-6 {
+        Change::None
+    } else if continues {
+        Change::Continue
+    } else {
+        Change::Step
+    };
+    if resp.dragged() && change != Change::None {
+        ui.data_mut(|d| d.insert_temp(id, true));
+    } else if !resp.dragged() {
+        ui.data_mut(|d| d.remove::<bool>(id));
+    }
+
+    // Paint: the label, a track filled from zero to the value, the knob.
+    let modified = value.abs() > CHANGED;
+    let p = ui.painter();
+    p.text(
+        row.left_center(),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(t.body),
+        if modified { TEXT_1 } else { TEXT_2 },
+    );
+    let x = |v: f32| track_r.min.x + (v - lo) / span * track_r.width();
+    let cy = track_r.center().y;
+    let line = Rect::from_min_max(
+        egui::pos2(track_r.min.x, cy - 2.0),
+        egui::pos2(track_r.max.x, cy + 2.0),
+    );
+    p.rect_filled(line, Rounding::same(2.0), BORDER);
+    let (a, b) = (x(0.0_f32.clamp(lo, hi)), x(*value));
+    let fill = Rect::from_min_max(
+        egui::pos2(a.min(b), cy - 2.0),
+        egui::pos2(a.max(b), cy + 2.0),
+    );
+    if fill.width() >= 0.5 {
+        p.rect_filled(fill, Rounding::same(2.0), ACCENT);
+    }
+    let knob = egui::pos2(b, cy);
+    if resp.has_focus() {
+        p.circle_stroke(knob, 9.0, Stroke::new(2.0, ACCENT_LINE));
+    }
+    let active = resp.hovered() || resp.dragged();
+    p.circle_filled(knob, if active { 7.0 } else { 6.0 }, TEXT_1);
+    (change, track_r)
 }
 
 /// Format a slider value for display. Bipolar uses +/− prefix, 0 → "0".
@@ -1288,66 +1082,129 @@ fn format_slider_value(value: f32, bipolar: bool) -> String {
     if value > 0.0 {
         format!("+{:.2}", value)
     } else {
-        format!("\u{2212}{:.2}", value.abs())
-    } // Unicode minus
+        format!("\u{2212}{:.2}", value.abs()) // Unicode minus
+    }
 }
 
-// ── Footer hint ───────────────────────────────────────────────────────────────
+// ── Info card ─────────────────────────────────────────────────────────────────
 
-// ── EXIF / IPTC panel ─────────────────────────────────────────────────────────
-
-fn draw_exif_section(ui: &mut Ui, t: &T, metadata: Option<&crate::exif::ImageMetadata>) {
-    Frame::none()
-        .inner_margin(Margin {
-            left: t.row_x,
-            right: t.row_x,
-            top: t.row_y * 0.5,
-            bottom: t.row_y,
-        })
-        .show(ui, |ui| {
-            match metadata {
-                None => {
-                    ui.label(
-                        RichText::new("No EXIF data available")
-                            .color(TEXT_3)
-                            .size(t.body),
-                    );
-                }
-                Some(meta) if meta.is_empty() => {
-                    ui.label(
-                        RichText::new("No EXIF data available")
-                            .color(TEXT_3)
-                            .size(t.body),
-                    );
-                }
-                Some(meta) => {
-                    ui.spacing_mut().item_spacing = egui::Vec2::new(0.0, 5.0);
-                    for field in &meta.fields {
-                        ui.horizontal(|ui| {
-                            // Label column: fixed width, dimmed
-                            let (_, lr) = ui.allocate_space(egui::Vec2::new(
-                                t.slbl_w + t.sval_w * 0.5,
-                                t.body * 1.6,
-                            ));
-                            ui.painter().text(
-                                lr.left_center(),
-                                egui::Align2::LEFT_CENTER,
-                                field.label,
-                                egui::FontId::proportional(t.caption),
-                                TEXT_3,
-                            );
-                            // Value: wrapping, full brightness
-                            ui.with_layout(
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
+/// The file's EXIF, in a card over the canvas's top-left corner (I). It was a
+/// section of the editor rail, where the viewer — where you look a photo
+/// over — could not show it.
+pub fn draw_info_card(ctx: &Context, metadata: Option<&crate::exif::ImageMetadata>) {
+    egui::Area::new(egui::Id::new("info_card"))
+        .fixed_pos(egui::pos2(16.0, 16.0))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .show(ctx, |ui| {
+            Frame::none()
+                .fill(SURFACE)
+                .stroke(Stroke::new(1.0, BORDER))
+                .rounding(Rounding::same(8.0))
+                .inner_margin(14.0)
+                .show(ui, |ui| {
+                    ui.set_max_width(320.0);
+                    ui.spacing_mut().item_spacing = Vec2::new(12.0, 5.0);
+                    match metadata.filter(|m| !m.is_empty()) {
+                        None => {
+                            ui.label(RichText::new("No EXIF data").color(TEXT_3).size(BODY));
+                        }
+                        Some(meta) => {
+                            egui::Grid::new("info_grid").num_columns(2).show(ui, |ui| {
+                                for field in &meta.fields {
                                     ui.label(
-                                        RichText::new(&field.value).color(TEXT_1).size(t.body),
+                                        RichText::new(field.label).color(TEXT_3).size(CAPTION),
                                     );
-                                },
-                            );
-                        });
+                                    ui.label(RichText::new(&field.value).color(TEXT_1).size(BODY));
+                                    ui.end_row();
+                                }
+                            });
+                        }
                     }
-                }
-            }
+                });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Drive one slider through egui with real pointer events.
+    fn frame(ctx: &Context, value: &mut f32, events: Vec<egui::Event>) -> (Change, Rect) {
+        let mut out = (Change::None, Rect::NOTHING);
+        let raw = egui::RawInput {
+            events,
+            screen_rect: Some(Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(1000.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let t = T::new(ctx);
+                out = slider(ui, &t, "Exposure", value, -2.0, 2.0);
+            });
+        });
+        out
+    }
+
+    fn pointer(pos: egui::Pos2, pressed: Option<bool>) -> Vec<egui::Event> {
+        let mut ev = vec![egui::Event::PointerMoved(pos)];
+        if let Some(pressed) = pressed {
+            ev.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        ev
+    }
+
+    /// One drag is one undo step: its first change is a Step, every later
+    /// frame of it continues that step.
+    #[test]
+    fn a_drag_is_one_step() {
+        let ctx = Context::default();
+        install_fonts(&ctx);
+        let mut v = 0.0;
+        let (_, track) = frame(&ctx, &mut v, vec![]);
+        let y = track.center().y;
+        let at = |f: f32| egui::pos2(track.min.x + f * track.width(), y);
+
+        let mut changes = vec![];
+        changes.push(frame(&ctx, &mut v, pointer(at(0.5), Some(true))).0);
+        for f in [0.55, 0.6, 0.7, 0.8, 0.9] {
+            changes.push(frame(&ctx, &mut v, pointer(at(f), None)).0);
+        }
+        changes.push(frame(&ctx, &mut v, pointer(at(0.9), Some(false))).0);
+
+        let steps = changes.iter().filter(|c| **c == Change::Step).count();
+        let conts = changes.iter().filter(|c| **c == Change::Continue).count();
+        assert_eq!(steps, 1, "{changes:?}");
+        assert!(conts >= 3, "{changes:?}");
+        assert!((v - 1.6).abs() < 0.05, "ended near 90% of −2..2: {v}");
+
+        // The next drag is a new step.
+        frame(&ctx, &mut v, pointer(at(0.9), Some(true)));
+        let next = frame(&ctx, &mut v, pointer(at(0.3), None)).0;
+        assert_eq!(next, Change::Step);
+    }
+
+    #[test]
+    fn the_rail_offers_every_preset_once() {
+        let mut want: Vec<_> = Preset::ALL.iter().filter(|p| **p != Preset::None).collect();
+        let mut got: Vec<_> = PRESET_ORDER.iter().collect();
+        want.sort_by_key(|p| p.label());
+        got.sort_by_key(|p| p.label());
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn values_read_with_a_real_minus() {
+        assert_eq!(format_slider_value(-0.5, true), "\u{2212}0.50");
+        assert_eq!(format_slider_value(0.001, true), "0");
+        assert_eq!(format_slider_value(0.25, false), "0.25");
+    }
 }

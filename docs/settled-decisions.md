@@ -146,6 +146,23 @@ SemiBold is its own family for titles. Three type steps; slider values are monos
 **Icons are rasterised at the pixel size they are drawn**, re-rasterised when the window height or display scale
 changes it; scaling the SVGs' 24 px down to 12–17 px blurred them.
 
+## The editor rail: one toolbar, open groups, one undo step per drag (2026-11-01)
+**Layout** (`ui::draw_panel`): one toolbar — Undo and Redo left; Save As, Save and a ▾ holding *Reset all edits*
+right — then preset chips, a row of four geometry buttons, and the sliders always open under Light / Color /
+Detail. A group's head shows a dot only when the group is modified; clicking it resets that group.
+**Presets stay a pipeline stage**, not offsets written into the sliders: five presets set style flags (B&W, matte,
+glow), Auto Enhance depends on the image's pixels, and contrast composes as `c*0.5+k`, so none of them is a slider
+position. A chip previews on the canvas while hovered and commits on click; clicking the chosen one clears it.
+**One drag is one undo step.** The slider reports its first change as a step and every later frame of the drag as
+continuing it (`ui::Change`), and the app replaces the current undo entry instead of pushing
+(`one_undo_takes_back_a_whole_drag`). Before this a drag filled the 50-step history. Arrow keys on a focused
+slider step once per press; a key repeat continues the step.
+**Scale left the pipeline.** Output size is Save As's *Long edge*; a scaled preview could not show 100% pixels.
+**EXIF left the rail** for an Info card over the canvas, toggled with I in both modes.
+**A save renders from the committed params** (`apply_edits` on the source at save time), never from `es.display`:
+that is the last frame shown, which lags the params during the slider debounce and is the hovered preset while one
+is previewed (`a_save_writes_the_committed_edit_not_the_last_frame`).
+
 ## Paths are used as given — no `canonicalize` (inherited)
 `std::fs::canonicalize` on Windows returns a verbatim `\\?\C:\…` path, which breaks paths handed over by
 archivers. **Build-enforced**: both `canonicalize` functions are banned in `clippy.toml`, and

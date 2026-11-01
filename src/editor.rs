@@ -12,7 +12,7 @@
 //! is simply a `Vec<EditParams>` with no pixel copying.
 //!
 //! Operations are applied per-frame in this fixed order:
-//!   1. Rotation → Flips → Scale
+//!   1. Rotation → Flips (output size is Save As's Long edge, not an edit)
 //!   2. Exposure → Highlights/Shadows → Brightness → Contrast
 //!   3. Saturation → Vibrance
 //!   4. Style flags from the active preset
@@ -93,6 +93,8 @@ pub enum Preset {
 }
 
 impl Preset {
+    /// Every preset; the rail's order is checked against it in ui.rs.
+    #[cfg(test)]
     pub const ALL: &'static [Self] = &[
         Self::None,
         Self::AutoEnhance,
@@ -136,8 +138,6 @@ pub struct EditParams {
     pub rotation: Rotation,
     pub flip_h: bool,
     pub flip_v: bool,
-    /// [0.05 – 4.0], 1.0 = original
-    pub scale: f32,
     // Tonal
     /// [-2.0 – +2.0] EV stops
     pub exposure: f32,
@@ -167,7 +167,6 @@ impl Default for EditParams {
             rotation: Rotation::R0,
             flip_h: false,
             flip_v: false,
-            scale: 1.0,
             exposure: 0.0,
             highlights: 0.0,
             shadows: 0.0,
@@ -190,7 +189,6 @@ impl EditParams {
             && self.rotation == Rotation::R0
             && !self.flip_h
             && !self.flip_v
-            && (self.scale - 1.0).abs() < 1e-4
             && self.exposure.abs() < 1e-4
             && self.highlights.abs() < 1e-4
             && self.shadows.abs() < 1e-4
@@ -221,7 +219,6 @@ impl UndoStack {
     pub fn current(&self) -> &EditParams {
         &self.history[self.cursor]
     }
-    #[allow(dead_code)]
     pub fn current_mut(&mut self) -> &mut EditParams {
         &mut self.history[self.cursor]
     }
@@ -364,12 +361,6 @@ pub fn apply_edits(src: &DecodedImage, params: &EditParams) -> DecodedImage {
 fn process_frame(px: &[u8], w: u32, h: u32, p: &EditParams) -> (Vec<u8>, u32, u32) {
     // 1. Geometry
     let (px, w, h) = apply_rotation_flip_raw(px, w, h, p);
-    // 2. Scale
-    let (px, w, h) = if (p.scale - 1.0).abs() > 1e-4 {
-        scale_bilinear(&px, w, h, p.scale)
-    } else {
-        (px, w, h)
-    };
     // 3–4. Tonal + colour + style
     let pp = resolve_pipeline(p, &px);
     let px = tonal_colour(&px, &pp);
@@ -827,49 +818,6 @@ fn do_flip(px: &[u8], w: u32, h: u32, fh: bool, fv: bool) -> (Vec<u8>, u32, u32)
     (out, w, h)
 }
 
-// ── Bilinear scale ────────────────────────────────────────────────────────────
-
-fn scale_bilinear(px: &[u8], w: u32, h: u32, scale: f32) -> (Vec<u8>, u32, u32) {
-    let nw = ((w as f32 * scale).round() as u32).max(1);
-    let nh = ((h as f32 * scale).round() as u32).max(1);
-    let mut out = vec![0u8; (nw * nh * 4) as usize];
-    let inv = 1.0 / scale;
-    for ny in 0..nh {
-        let sf = ny as f32 * inv;
-        let sy0 = sf as u32;
-        let sy1 = (sy0 + 1).min(h - 1);
-        let fy = sf - sy0 as f32;
-        for nx in 0..nw {
-            let sf = nx as f32 * inv;
-            let sx0 = sf as u32;
-            let sx1 = (sx0 + 1).min(w - 1);
-            let fx = sf - sx0 as f32;
-            let p00 = samp(px, w, sx0, sy0);
-            let p10 = samp(px, w, sx1, sy0);
-            let p01 = samp(px, w, sx0, sy1);
-            let p11 = samp(px, w, sx1, sy1);
-            let d = ((ny * nw + nx) * 4) as usize;
-            for c in 0..4 {
-                let t = p00[c] + (p10[c] - p00[c]) * fx;
-                let b = p01[c] + (p11[c] - p01[c]) * fx;
-                out[d + c] = (t + (b - t) * fy).round().clamp(0.0, 255.0) as u8;
-            }
-        }
-    }
-    (out, nw, nh)
-}
-
-#[inline]
-fn samp(buf: &[u8], w: u32, x: u32, y: u32) -> [f32; 4] {
-    let i = ((y * w + x) * 4) as usize;
-    [
-        buf[i] as f32,
-        buf[i + 1] as f32,
-        buf[i + 2] as f32,
-        buf[i + 3] as f32,
-    ]
-}
-
 // ── Unsharp mask ──────────────────────────────────────────────────────────────
 
 fn unsharp_mask(px: &[u8], w: u32, h: u32, amount: f32) -> Vec<u8> {
@@ -930,8 +878,6 @@ fn box_blur_3x3(px: &[u8], w: u32, h: u32) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::loader::{DecodedImage, Frame};
-    use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-    use rayon::slice::{ParallelSlice, ParallelSliceMut};
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

@@ -32,7 +32,6 @@ mod loader;
 mod logging;
 mod nav;
 mod orientation;
-mod preset_thumbs;
 mod save;
 mod ui;
 mod xmp;
@@ -50,7 +49,7 @@ use exif::ImageMetadata;
 use loader::{load_image, DecodedImage, LoadOutcome};
 use nav::DirNavigator;
 use notify_debouncer_mini::{new_debouncer, Debouncer};
-use ui::{draw_panel, Icons, PanelAction, ThumbCache};
+use ui::{draw_panel, Icons, PanelAction, PanelInput};
 use xmp::{ColourLabel, ImageLabels};
 
 // ── Type aliases ──────────────────────────────────────────────────────────────
@@ -346,8 +345,8 @@ struct App {
     // ── Editor ────────────────────────────────────────────────────────────────
     editor_state: Option<EditorState>,
     initial_editor_params: Option<EditParams>,
-    editor_open_sections: [bool; 6],
-    thumb_cache: Option<ThumbCache>,
+    /// The preset chip being previewed on the canvas, if any.
+    preview: Option<editor::Preset>,
     icon_cache: Option<Icons>,
 
     // ── Async pixel editing ───────────────────────────────────────────────────
@@ -365,6 +364,8 @@ struct App {
     /// Discard was chosen in a "Save changes?" that a quit opened.
     pending_close: bool,
     show_help: bool,
+    /// The EXIF card over the canvas (I).
+    show_info: bool,
 }
 
 impl App {
@@ -401,8 +402,7 @@ impl App {
             labels: ImageLabels::default(),
             editor_state: None,
             initial_editor_params: None,
-            editor_open_sections: [true, true, false, false, false, false],
-            thumb_cache: None,
+            preview: None,
             icon_cache: None,
             edit_rx: None,
             edit_gen: 0,
@@ -415,6 +415,7 @@ impl App {
             pending_close: false,
             pending_save_and_exit: None,
             show_help: false,
+            show_info: false,
         }
     }
 
@@ -763,7 +764,6 @@ impl App {
         }
         self.editor_state = Some(EditorState::new(&img));
         self.initial_editor_params = Some(EditParams::default());
-        self.thumb_cache = Some(ThumbCache::new());
     }
 
     /// Returns `true` if the editor was exited or was already closed.
@@ -790,7 +790,7 @@ impl App {
     fn do_exit_editor(&mut self) {
         self.editor_state = None;
         self.initial_editor_params = None;
-        self.thumb_cache = None;
+        self.preview = None;
         self.icon_cache = None;
         self.edit_rx = None;
         self.last_slider_change = None;
@@ -968,11 +968,18 @@ impl App {
             return;
         }
 
-        // Slider / preset change: debounce before re-encoding.
+        // Slider / preset change: debounce before re-encoding. A drag's later
+        // frames replace the step its first frame made.
         if let Some(new_p) = action.new_params {
             log!("[action] ParamChange");
             if let Some(es) = &mut self.editor_state {
                 es.commit(new_p);
+            }
+            self.last_slider_change = Some(Instant::now());
+        } else if let Some(p) = action.drag_params {
+            if let Some(es) = &mut self.editor_state {
+                *es.undo.current_mut() = p;
+                es.dirty = true;
             }
             self.last_slider_change = Some(Instant::now());
         }
@@ -990,7 +997,9 @@ impl App {
             return false;
         };
         let params = es.undo.current().clone();
-        let display = es.display.clone();
+        let Some(display) = self.pixels_to_save() else {
+            return false;
+        };
 
         // A JPEG that was only rotated or flipped keeps its compressed data:
         // the change goes into the EXIF orientation (see orientation.rs).
@@ -1059,8 +1068,9 @@ impl App {
     }
 
     fn commit_save_as(&mut self, dest: PathBuf, quality: u8, max_dim: Option<u32>) {
-        let Some(es) = &self.editor_state else { return };
-        let display = es.display.clone();
+        let Some(display) = self.pixels_to_save() else {
+            return;
+        };
         let meta = self
             .current_path
             .as_deref()
@@ -1075,6 +1085,16 @@ impl App {
         self.navigator.set_current(dest);
         self.image_gen += 1;
         self.reset_editor_after_save();
+    }
+
+    /// The committed edits applied to the source, rendered now. Not
+    /// `es.display`: that is the last frame the screen showed, which lags the
+    /// params during the slider debounce and shows a preset while one is only
+    /// hovered.
+    fn pixels_to_save(&self) -> Option<DecodedImage> {
+        let es = self.editor_state.as_ref()?;
+        let src = self.current_image.as_ref()?;
+        Some(editor::apply_edits(src, es.undo.current()))
     }
 
     fn reset_editor_after_save(&mut self) {
@@ -1333,6 +1353,9 @@ impl App {
         let pending_action = self.draw_editor_panel(ctx);
 
         self.draw_canvas(ctx);
+        if self.show_info {
+            ui::draw_info_card(ctx, self.metadata.as_ref());
+        }
 
         if let Some(action) = pending_action {
             self.apply_panel_action(action, ctx);
@@ -1362,13 +1385,25 @@ impl App {
         }
     }
 
-    /// Lazily initialise icon and thumbnail caches when the editor is open.
+    /// Show the hovered preset chip on the canvas, and the edit itself again
+    /// when the pointer leaves it. Only `display` changes: the undo stack and
+    /// what a save writes (`edited_pixels`) never see a preview.
+    fn preview_preset(&mut self, hover: Option<editor::Preset>, current: &EditParams) {
+        if hover == self.preview {
+            return;
+        }
+        self.preview = hover;
+        let mut p = current.clone();
+        if let Some(preset) = hover {
+            p.preset = preset;
+        }
+        self.launch_async_edit(p);
+    }
+
+    /// Lazily initialise the icon cache when the editor is open.
     fn ensure_editor_caches(&mut self, ctx: &egui::Context) {
         if !self.in_editor() {
             return;
-        }
-        if let Some(tc) = &mut self.thumb_cache {
-            tc.upload(ctx);
         }
         let px = ui::icon_px(ctx);
         if self.icon_cache.as_ref().map(|i| i.px) != Some(px) {
@@ -1396,18 +1431,17 @@ impl App {
             .as_ref()
             .map(|es| es.undo.can_redo())
             .unwrap_or(false);
-        let meta_ref = self.metadata.as_ref();
         let action = draw_panel(
             ctx,
-            &params,
-            can_undo,
-            can_redo,
-            self.editor_params_changed(),
-            self.thumb_cache.as_ref().unwrap(),
-            self.icon_cache.as_ref().unwrap(),
-            &mut self.editor_open_sections,
-            meta_ref.map(|m| m as &crate::exif::ImageMetadata),
+            PanelInput {
+                params: &params,
+                can_undo,
+                can_redo,
+                dirty: self.editor_params_changed(),
+                icons: self.icon_cache.as_ref().unwrap(),
+            },
         );
+        self.preview_preset(action.hover_preset, &params);
         if action.has_any() {
             Some(action)
         } else {
@@ -1432,25 +1466,13 @@ impl App {
             return;
         };
         let canvas = ui.available_rect_before_wrap();
-        let scale = self
-            .editor_state
-            .as_ref()
-            .map(|es| es.undo.current().scale)
-            .unwrap_or(1.0);
-
         // Allocate the full canvas first for reliable click/drag sense.
         let canvas_resp = ui.allocate_rect(canvas, egui::Sense::click_and_drag());
 
-        // Fit image to canvas, apply edit scale, then apply view zoom.
+        // Fit image to canvas, then apply view zoom.
         let fit = (canvas.width() / it.width as f32).min(canvas.height() / it.height as f32);
-        let base_w = it.width as f32 * fit * scale;
-        let base_h = it.height as f32 * fit * scale;
-        // Clamp edit scale within canvas, then apply view zoom on top.
-        let edit_clamp = (canvas.width() / base_w)
-            .min(canvas.height() / base_h)
-            .min(1.0);
-        let dw = base_w * edit_clamp * self.zoom;
-        let dh = base_h * edit_clamp * self.zoom;
+        let dw = it.width as f32 * fit * self.zoom;
+        let dh = it.height as f32 * fit * self.zoom;
 
         // Centre + apply pan offset. In editor mode, zoom and pan are active.
         let cx = canvas.min.x + (canvas.width() - dw) * 0.5;
@@ -1636,9 +1658,6 @@ impl App {
             }
             Action::EnterEditor => {
                 self.enter_editor(ctx);
-                if self.thumb_cache.is_none() {
-                    self.thumb_cache = Some(ThumbCache::new());
-                }
             }
             Action::LeaveEditor => {
                 self.exit_editor(false);
@@ -1660,6 +1679,7 @@ impl App {
                 }
             }
             Action::Help => self.show_help = !self.show_help,
+            Action::Info => self.show_info = !self.show_info,
             Action::Delete => self.delete_current(),
             Action::Quit => {
                 // In the editor, unsaved edits ask first.
@@ -2157,7 +2177,7 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
 
             // Max dimension (optional resize)
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Max size").color(TEXT_2).size(12.0));
+                ui.label(egui::RichText::new("Long edge").color(TEXT_2).size(12.0));
                 ui.add_space(8.0);
                 let mut enabled = modal.max_dim.is_some();
                 if ui.checkbox(&mut enabled, "").changed() {
@@ -2550,7 +2570,7 @@ impl PanelActionExt for PanelAction {
             || self.flip_v
     }
     fn has_any(&self) -> bool {
-        self.has_explicit_edit() || self.new_params.is_some()
+        self.has_explicit_edit() || self.new_params.is_some() || self.drag_params.is_some()
     }
 }
 
@@ -2634,7 +2654,6 @@ fn params_equal(a: &EditParams, b: &EditParams) -> bool {
         && a.flip_h == b.flip_h
         && a.flip_v == b.flip_v
         && a.preset == b.preset
-        && close(a.scale, b.scale)
         && close(a.exposure, b.exposure)
         && close(a.highlights, b.highlights)
         && close(a.shadows, b.shadows)
@@ -2653,10 +2672,9 @@ fn close(a: f32, b: f32) -> bool {
 // ── Lossless JPEG geometry transforms ─────────────────────────────────────────
 
 /// Returns `true` when params contain only rotation/flip — no tonal, colour,
-/// scale, or preset changes. These can be applied losslessly to JPEG files.
+/// detail or preset changes. These can be applied losslessly to JPEG files.
 fn is_pure_geometry(p: &EditParams) -> bool {
     p.preset == editor::Preset::None
-        && (p.scale - 1.0).abs() < 1e-4
         && p.exposure.abs() < 1e-4
         && p.highlights.abs() < 1e-4
         && p.shadows.abs() < 1e-4
@@ -3129,6 +3147,79 @@ mod keyboard_tests {
         assert_ne!(std::fs::read(&path).unwrap(), before);
     }
 
+    /// The saved pixels carry the committed edit even when no render has
+    /// caught up with it (the slider debounce), and not a hovered preset.
+    #[test]
+    fn a_save_writes_the_committed_edit_not_the_last_frame() {
+        let dir = TempDir::new("savefresh");
+        let path = dir.jpeg("photo.jpg");
+        let (mut app, ctx) = app_on(&path);
+        edit(&mut app, &ctx); // exposure +0.5, committed, never rendered
+                              // The screen shows a hovered B&W preview meanwhile.
+        let es = app.editor_state.as_mut().unwrap();
+        let grey = EditParams {
+            preset: editor::Preset::Bw,
+            ..EditParams::default()
+        };
+        es.display = editor::apply_edits(app.current_image.as_ref().unwrap(), &grey);
+
+        assert!(app.save_inplace());
+
+        let saved = image::open(&path).unwrap().to_rgb8();
+        let px = saved.get_pixel(8, 4);
+        // Source is (200, 60, 40): brighter, and still red, not grey.
+        assert!(px[1] > 70 && px[2] > 48, "exposure applied: {px:?}");
+        assert!(
+            px[0] as i32 - px[1] as i32 > 80,
+            "not the B&W preview: {px:?}"
+        );
+    }
+
+    /// The frames of one drag replace the step its first frame made, so one
+    /// Ctrl+Z takes the whole drag back.
+    #[test]
+    fn one_undo_takes_back_a_whole_drag() {
+        let dir = TempDir::new("dragundo");
+        let (mut app, ctx) = app_on(&dir.jpeg("photo.jpg"));
+        app.enter_editor(&ctx);
+        let at = |exposure| EditParams {
+            exposure,
+            ..EditParams::default()
+        };
+        app.apply_panel_action(
+            PanelAction {
+                new_params: Some(at(0.1)),
+                ..Default::default()
+            },
+            &ctx,
+        );
+        for e in [0.2, 0.4, 0.8] {
+            app.apply_panel_action(
+                PanelAction {
+                    drag_params: Some(at(e)),
+                    ..Default::default()
+                },
+                &ctx,
+            );
+        }
+        let es = app.editor_state.as_ref().unwrap();
+        assert!(close(es.undo.current().exposure, 0.8));
+
+        frame(&mut app, &ctx, vec![press(Key::Z, WIN_CTRL)]);
+        assert!(!app.editor_params_changed(), "one undo, back to the start");
+    }
+
+    #[test]
+    fn i_toggles_the_info_card_in_both_modes() {
+        let dir = TempDir::new("info");
+        let (mut app, ctx) = app_on(&dir.jpeg("photo.jpg"));
+        frame(&mut app, &ctx, vec![press(Key::I, Modifiers::NONE)]);
+        assert!(app.show_info);
+        app.enter_editor(&ctx);
+        frame(&mut app, &ctx, vec![press(Key::I, Modifiers::NONE)]);
+        assert!(!app.show_info);
+    }
+
     // ── Closing the window ────────────────────────────────────────────────────
 
     #[test]
@@ -3385,8 +3476,9 @@ mod keyboard_tests {
         assert_eq!(app.guides, Guides::Off);
     }
 
-    /// Whether this frame paints anything filled with the accent, which in
-    /// the editor is only the primary button.
+    /// Whether this frame paints a button-sized rect filled with the accent,
+    /// which in the editor is only the primary button (a moved slider's 4 px
+    /// fill is accent too, so size tells them apart).
     fn paints_accent_fill(app: &mut App, ctx: &egui::Context) -> bool {
         let raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -3396,9 +3488,10 @@ mod keyboard_tests {
             ..Default::default()
         };
         let out = ctx.run(raw, |ctx| app.draw_ui(ctx));
-        out.shapes
-            .iter()
-            .any(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.fill == ui::tok::ACCENT))
+        out.shapes.iter().any(|s| {
+            matches!(&s.shape, egui::Shape::Rect(r)
+                    if r.fill == ui::tok::ACCENT && r.rect.height() >= 20.0)
+        })
     }
 
     #[test]
@@ -3406,7 +3499,6 @@ mod keyboard_tests {
         let dir = TempDir::new("primary");
         let (mut app, ctx) = app_on(&dir.jpeg("photo.jpg"));
         app.enter_editor(&ctx);
-        app.thumb_cache = Some(ThumbCache::new());
         paints_accent_fill(&mut app, &ctx); // first frame lays out the panel
 
         assert!(

@@ -16,7 +16,7 @@ loader, navigator and path rules.
 - `src/save.rs` — every other save: re-encoding, with the source's EXIF and ICC profile carried across.
 - `src/keymap.rs` — every keyboard shortcut, one table for the handler and the help.
 - `src/logging.rs` — the `log` sink: stderr and the per-user `patina.log`.
-- `src/preset_thumbs.rs`, `src/assets/` — embedded SVGs. `patina_setup.iss` — Inno Setup installer.
+- `src/assets/` — embedded SVG icons and the Inter fonts. `patina_setup.iss` — Inno Setup installer.
 
 ## Critical rules
 - **Read [docs/settled-decisions.md](docs/settled-decisions.md) before proposing a change to rendering, paths,

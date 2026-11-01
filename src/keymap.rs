@@ -38,6 +38,7 @@ pub enum Action {
     Back,
     Fullscreen,
     Help,
+    Info,
     Delete,
     Quit,
     Undo,
@@ -173,6 +174,12 @@ pub const KEYMAP: &[Binding] = &[
         keys: &[(NO, Key::F), (NO, Key::F11)],
         action: Action::Fullscreen,
         what: "Fullscreen (stops a slideshow)",
+    },
+    Binding {
+        mode: Mode::Both,
+        keys: &[(NO, Key::I)],
+        action: Action::Info,
+        what: "Image info (EXIF)",
     },
     Binding {
         mode: Mode::Both,

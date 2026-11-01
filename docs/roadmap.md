@@ -28,17 +28,10 @@ tiles. The viewer keeps its zero-chrome canvas. The editor rail is reorganised a
 
 ## The editor
 
-5. **Rail rebuilt around the edit**, fitting 1200 px without scrolling:
-   - one 44 px toolbar — Undo, Redo, Before/After left; Save As and Save right; Reset all under Save's ▾;
-   - all eight sliders always open under Light / Color / Detail subheads (no collapsing);
-   - presets as text chips that preview on the canvas on hover and write their offsets into the sliders as one
-     labelled undo step (the twelve identical placeholder tiles, `preset_thumbs.rs` and `ThumbCache` go);
-   - geometry as one row of four icon buttons;
-   - Scale leaves the pipeline; output size is Save As's *Long edge*;
-   - EXIF leaves the rail for a viewer Info card (I);
-   - a painter-drawn slider: fill from zero, typed values, double-click reset, Shift for fine, **one undo step
-     per drag** (a drag fills the whole 50-step history today);
-   - section dots appear only when a group is modified, and reset it on click.
+5. ~~**Rail rebuilt around the edit.**~~ Done — one toolbar, open slider groups, preset chips that preview on
+   hover, one undo step per drag, Scale gone, EXIF on an Info card (I); see settled-decisions.md. Two parts of the
+   plan moved: Before/After is item 7's Backslash rather than a toolbar button, and presets stay a pipeline stage
+   instead of writing offsets into the sliders (five of them are not slider offsets).
 
 ## The viewer
 
