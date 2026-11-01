@@ -1653,10 +1653,11 @@ impl App {
             if let (Some(reason), Some(path)) = (&self.bad_file, &self.current_path) {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
                 hud::draw_bad_file_card(ui.painter(), canvas, &name, reason);
-            } else if self.current_path.is_none() && self.loading_path.is_none() {
-                if hud::draw_empty_state(ui, canvas) {
-                    self.open_dialog(&ctx);
-                }
+            } else if self.current_path.is_none()
+                && self.loading_path.is_none()
+                && hud::draw_empty_state(ui, canvas)
+            {
+                self.open_dialog(&ctx);
             }
             if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
                 hud::draw_drop_target(ui.painter(), canvas);
