@@ -51,11 +51,11 @@ impl ColourLabel {
     pub fn color(self) -> egui::Color32 {
         match self {
             Self::None => egui::Color32::TRANSPARENT,
-            Self::Red => egui::Color32::from_rgb(0xE0, 0x55, 0x45),
-            Self::Yellow => egui::Color32::from_rgb(0xE8, 0xC0, 0x40),
-            Self::Green => egui::Color32::from_rgb(0x50, 0xB8, 0x70),
-            Self::Blue => egui::Color32::from_rgb(0x50, 0x90, 0xD8),
-            Self::Purple => egui::Color32::from_rgb(0xA0, 0x60, 0xD0),
+            Self::Red => crate::ui::tok::LABEL_RED,
+            Self::Yellow => crate::ui::tok::LABEL_YELLOW,
+            Self::Green => crate::ui::tok::LABEL_GREEN,
+            Self::Blue => crate::ui::tok::LABEL_BLUE,
+            Self::Purple => crate::ui::tok::LABEL_PURPLE,
         }
     }
 }

@@ -10,39 +10,143 @@ use egui::{
 };
 use egui_extras;
 
-// ── Colour tokens (§3) ────────────────────────────────────────────────────────
+// ── Colour tokens ─────────────────────────────────────────────────────────────
 
-#[allow(dead_code)]
-pub const CANVAS: Color32 = Color32::from_rgb(0x0E, 0x0E, 0x10);
-pub const BG: Color32 = Color32::from_rgb(0x1C, 0x1C, 0x1E);
-pub const BG_DEEP: Color32 = Color32::from_rgb(0x16, 0x16, 0x18);
-pub const BORDER: Color32 = Color32::from_rgb(0x2A, 0x2A, 0x2E);
-#[allow(dead_code)]
-pub const BORDER_HI: Color32 = Color32::from_rgb(0x3A, 0x3A, 0x3F);
-pub const BTN: Color32 = Color32::from_rgb(0x2A, 0x2A, 0x2E);
-#[allow(dead_code)]
-pub const BTN_PRESS: Color32 = Color32::from_rgb(0x3E, 0x3E, 0x44);
-pub const TEXT: Color32 = Color32::from_rgb(0xE8, 0xE8, 0xE8);
-pub const DIM: Color32 = Color32::from_rgb(0x8E, 0x8E, 0x93);
-pub const FAINT: Color32 = Color32::from_rgb(0x5E, 0x5E, 0x63);
-pub const ACCENT: Color32 = Color32::from_rgb(0x9D, 0xBF, 0xB0);
-#[allow(dead_code)]
-pub const ACCENT_DIM: Color32 = Color32::from_rgb(0x7E, 0xA3, 0x95);
-// Semi-transparent: accentBg = rgba(157,191,176,0.16), accentBdr = rgba(157,191,176,0.45)
-pub const ACCENT_BG: Color32 = Color32::from_rgba_premultiplied(25, 47, 41, 41);
-pub const ACCENT_BDR: Color32 = Color32::from_rgba_premultiplied(71, 86, 79, 115);
-pub const DANGER: Color32 = Color32::from_rgb(0xE0, 0x65, 0x4A);
-pub const DANGER_BG: Color32 = Color32::from_rgb(0x3A, 0x26, 0x24);
-pub const DANGER_BDR: Color32 = Color32::from_rgb(0x5A, 0x30, 0x28);
-pub const DANGER_PR: Color32 = Color32::from_rgb(0x4A, 0x28, 0x24);
-pub const ON_PRIMARY: Color32 = Color32::from_rgb(0x15, 0x20, 0x1B);
-#[allow(dead_code)]
-pub const TRACK: Color32 = Color32::from_rgb(0x2E, 0x2E, 0x32);
+/// Every colour Patina paints, and the only place one is written. Neutrals
+/// carry a trace of the green so the panels sit with the accent instead of
+/// next to it. Green *means* something — changed, the default action,
+/// selected, focused — and is never decoration. Every text colour reaches
+/// WCAG AA (4.5:1) on every surface it is drawn on; `tests` measures it.
+/// Opaque except the three drawn over the photo: a translucent colour's
+/// contrast depends on what is under it.
+pub mod tok {
+    use egui::Color32;
 
-/// Pressed-state accent fill used by the primary button and modal primary hover.
-const ACCENT_PRESS: Color32 = Color32::from_rgba_premultiplied(35, 68, 59, 56);
-/// Primary hover — slightly lighter than ACCENT so hover reads against the solid fill.
-const ACCENT_HOVER: Color32 = Color32::from_rgb(0x8D, 0xAF, 0xA0);
+    const fn hex(v: u32) -> Color32 {
+        Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
+    }
+
+    /// Behind the image.
+    pub const CANVAS: Color32 = hex(0x0D0F0E);
+    /// Text fields, slider tracks.
+    pub const SURFACE_SUNKEN: Color32 = hex(0x141716);
+    /// The rail and dialogs.
+    pub const SURFACE: Color32 = hex(0x1A1D1C);
+    /// Secondary buttons, chips.
+    pub const RAISED: Color32 = hex(0x232826);
+    pub const RAISED_HOVER: Color32 = hex(0x2B312E);
+    /// Hairlines.
+    pub const BORDER: Color32 = hex(0x2A302D);
+    /// Outlines, disabled glyphs.
+    pub const BORDER_STRONG: Color32 = hex(0x3B423F);
+
+    pub const TEXT_1: Color32 = hex(0xE6EAE8);
+    pub const TEXT_2: Color32 = hex(0x9AA39F);
+    pub const TEXT_3: Color32 = hex(0x8A938F);
+    /// A control that cannot be used now: visible (about 3:1), clearly off.
+    pub const TEXT_DISABLED: Color32 = hex(0x5E6662);
+
+    /// The primary button, modified dots, slider fill.
+    pub const ACCENT: Color32 = hex(0x9DBFB0);
+    pub const ACCENT_HOVER: Color32 = hex(0xB2D3C4);
+    pub const ACCENT_PRESS: Color32 = hex(0x87A99A);
+    /// Selected fill.
+    pub const ACCENT_SOFT: Color32 = hex(0x1F2E28);
+    /// Focus ring, selected outline.
+    pub const ACCENT_LINE: Color32 = hex(0x4F6E61);
+    /// Text on ACCENT.
+    pub const ON_ACCENT: Color32 = hex(0x12201A);
+
+    /// Destructive actions, errors.
+    pub const DANGER: Color32 = hex(0xE67458);
+    pub const DANGER_SOFT: Color32 = hex(0x35221E);
+    pub const DANGER_LINE: Color32 = hex(0x5A3028);
+
+    pub const STAR: Color32 = hex(0xE2C062);
+    pub const LABEL_RED: Color32 = hex(0xD7604F);
+    pub const LABEL_YELLOW: Color32 = hex(0xD9B95A);
+    pub const LABEL_GREEN: Color32 = hex(0x6DB487);
+    pub const LABEL_BLUE: Color32 = hex(0x6A98CF);
+    pub const LABEL_PURPLE: Color32 = hex(0xA178C8);
+
+    // Drawn over the photo, so translucent by design; no text sits on them.
+    /// Dims the app behind a dialog.
+    pub const SCRIM: Color32 = Color32::from_black_alpha(160);
+    /// Composition guide lines.
+    pub const GUIDE: Color32 = Color32::from_rgba_premultiplied(60, 60, 60, 60);
+    /// The outline that keeps a label dot visible on any photo.
+    pub const ON_PHOTO_RING: Color32 = Color32::from_rgba_premultiplied(80, 80, 80, 80);
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// WCAG 2 contrast ratio of two opaque colours.
+        fn contrast(a: Color32, b: Color32) -> f32 {
+            fn lum(c: Color32) -> f32 {
+                let ch = |v: u8| {
+                    let v = v as f32 / 255.0;
+                    if v <= 0.03928 {
+                        v / 12.92
+                    } else {
+                        ((v + 0.055) / 1.055).powf(2.4)
+                    }
+                };
+                0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
+            }
+            let (x, y) = (lum(a), lum(b));
+            (x.max(y) + 0.05) / (x.min(y) + 0.05)
+        }
+
+        #[test]
+        fn text_reaches_aa_wherever_it_is_drawn() {
+            let pairs = [
+                (
+                    "TEXT_1",
+                    TEXT_1,
+                    &[SURFACE, SURFACE_SUNKEN, RAISED, RAISED_HOVER][..],
+                ),
+                ("TEXT_2", TEXT_2, &[SURFACE, SURFACE_SUNKEN, RAISED][..]),
+                ("TEXT_3", TEXT_3, &[SURFACE, SURFACE_SUNKEN][..]),
+                (
+                    "ON_ACCENT",
+                    ON_ACCENT,
+                    &[ACCENT, ACCENT_HOVER, ACCENT_PRESS][..],
+                ),
+                ("ACCENT", ACCENT, &[SURFACE, ACCENT_SOFT, RAISED][..]),
+                ("DANGER", DANGER, &[SURFACE, DANGER_SOFT, RAISED][..]),
+            ];
+            let mut fails = Vec::new();
+            for (name, fg, bgs) in pairs {
+                for &bg in bgs {
+                    let c = contrast(fg, bg);
+                    if c < 4.5 {
+                        fails.push(format!("{name} on {bg:?}: {c:.2}"));
+                    }
+                }
+            }
+            assert!(fails.is_empty(), "{fails:#?}");
+        }
+
+        /// Disabled is exempt from AA, but must still be seen.
+        #[test]
+        fn disabled_is_visible_and_quieter_than_text() {
+            let c = contrast(TEXT_DISABLED, SURFACE);
+            assert!((2.8..4.5).contains(&c), "{c:.2}");
+        }
+
+        /// The token the old palette failed with: `#5E5E63` faint text.
+        #[test]
+        fn the_measure_agrees_with_the_review() {
+            let old_faint = hex(0x5E5E63);
+            let old_bg = hex(0x1C1C1E);
+            assert!((contrast(old_faint, old_bg) - 2.6).abs() < 0.1);
+            assert!((contrast(TEXT_1, SURFACE) - 14.0).abs() < 0.3);
+        }
+    }
+}
+
+use tok::*;
 
 /// Rail width: 20% of window width, clamped to [320, 420] logical px.
 pub fn rail_width(window_w: f32) -> f32 {
@@ -68,10 +172,8 @@ struct T {
     icon: f32,     // icon size (square)
     icon_chk: f32, // check icon size inside active badge
     badge: f32,    // preset active-badge diameter
-    text_sec: f32, // section header font size
-    text_sub: f32, // subgroup heading font size
-    text_btn: f32, // button label font size
-    text_sld: f32, // slider label/value font size
+    caption: f32,  // section heads and sub-labels: the small type step
+    body: f32,     // buttons, slider labels and values
     rail_w: f32,   // computed rail width this frame
 }
 
@@ -96,13 +198,66 @@ impl T {
             icon: (u * 0.778).max(12.0),
             icon_chk: (u * 0.611).max(9.0),
             badge: (u * 1.000).max(14.0),
-            text_sec: (u * 0.583).max(9.5),
-            text_sub: (u * 0.555).max(9.5),
-            text_btn: (u * 0.667).max(11.0),
-            text_sld: (u * 0.667).max(11.0),
+            caption: (u * 0.583).max(CAPTION - 1.5),
+            body: (u * 0.667).max(CAPTION),
             rail_w: rail_width(w),
         }
     }
+
+    fn btn(&self) -> BtnSize {
+        BtnSize {
+            h: self.btn_h,
+            font: self.body,
+            icon: self.icon,
+            pad: self.gap,
+            gap: (self.u * 0.39).max(5.0),
+            radius: self.radius,
+            min_w: 0.0,
+        }
+    }
+}
+
+// ── Type ──────────────────────────────────────────────────────────────────────
+//
+// Three steps, in Inter (bundled): the rail scales its two with the window
+// (`T::caption`, `T::body`); dialogs use these. Numbers that change while you
+// watch them — slider values — are monospace so they do not jitter.
+
+pub const CAPTION: f32 = 11.0;
+pub const BODY: f32 = 13.0;
+pub const TITLE: f32 = 16.0;
+
+/// The family for titles: Inter SemiBold. egui has no font weights, so the
+/// weight is a family of its own.
+pub fn title_font(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name("title".into()))
+}
+
+/// Inter for all text, SemiBold for titles, egui's own fonts behind them
+/// for glyphs Inter lacks.
+pub fn install_fonts(ctx: &Context) {
+    use egui::{FontData, FontFamily};
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "Inter".into(),
+        FontData::from_static(include_bytes!("assets/fonts/Inter-Regular.ttf")),
+    );
+    fonts.font_data.insert(
+        "Inter SemiBold".into(),
+        FontData::from_static(include_bytes!("assets/fonts/Inter-SemiBold.ttf")),
+    );
+    let fallbacks = fonts.families[&FontFamily::Proportional].clone();
+    fonts
+        .families
+        .get_mut(&FontFamily::Proportional)
+        .expect("egui defines Proportional")
+        .insert(0, "Inter".into());
+    let mut title = vec!["Inter SemiBold".to_string()];
+    title.extend(fallbacks);
+    fonts
+        .families
+        .insert(FontFamily::Name("title".into()), title);
+    ctx.set_fonts(fonts);
 }
 
 // ── Preset group order (§7, README) ──────────────────────────────────────────
@@ -137,7 +292,16 @@ static PRESET_GROUPS: &[PresetGroup] = &[
 
 // ── Icon cache ────────────────────────────────────────────────────────────────
 
+/// The pixel size rail icons are drawn at now. Rasterising the SVGs at their
+/// own 24 px and scaling to 12–17 px blurred them. It changes with the
+/// window height and the display scale, and the cache follows it.
+pub fn icon_px(ctx: &Context) -> u32 {
+    (T::new(ctx).icon * ctx.pixels_per_point()).round() as u32
+}
+
 pub struct Icons {
+    /// The pixel size they were rasterised at; see `icon_px`.
+    pub px: u32,
     pub save: TextureHandle,
     pub save_as: TextureHandle,
     pub undo: TextureHandle,
@@ -152,21 +316,23 @@ pub struct Icons {
 }
 
 impl Icons {
-    pub fn load(ctx: &Context) -> Self {
+    pub fn load(ctx: &Context, px: u32) -> Self {
         // SVGs use stroke="currentColor" which rasterizes to black.
         // Recolor all non-transparent pixels to white so egui's multiplicative
         // tint works: white × fg_color = fg_color.
-        fn load_svg(ctx: &Context, name: &str, bytes: &[u8]) -> TextureHandle {
-            let mut img = egui_extras::image::load_svg_bytes(bytes)
-                .unwrap_or_else(|_| egui::ColorImage::new([24, 24], Color32::WHITE));
+        let load_svg = |ctx: &Context, name: &str, bytes: &[u8]| -> TextureHandle {
+            let size = egui::SizeHint::Size(px, px);
+            let mut img = egui_extras::image::load_svg_bytes_with_size(bytes, Some(size))
+                .unwrap_or_else(|_| egui::ColorImage::new([px as usize; 2], Color32::WHITE));
             for px in img.pixels.iter_mut() {
                 if px.a() > 0 {
                     *px = Color32::from_rgba_premultiplied(px.a(), px.a(), px.a(), px.a());
                 }
             }
             ctx.load_texture(name, img, TextureOptions::LINEAR)
-        }
+        };
         Self {
+            px,
             save: load_svg(ctx, "ic_save", include_bytes!("assets/icons/save.svg")),
             save_as: load_svg(
                 ctx,
@@ -226,7 +392,7 @@ impl ThumbCache {
             let bytes = crate::preset_thumbs::thumb_svg_for_index(i);
             let img = match egui_extras::image::load_svg_bytes(bytes) {
                 Ok(img) => img,
-                Err(_) => egui::ColorImage::new([108, 81], Color32::from_rgb(0x1E, 0x2B, 0x26)),
+                Err(_) => egui::ColorImage::new([108, 81], SURFACE_SUNKEN),
             };
             *slot = Some(ctx.load_texture(format!("pt_{i}"), img, TextureOptions::LINEAR));
         }
@@ -260,13 +426,13 @@ pub fn apply_panel_style(ctx: &Context) {
     let mut style = (*ctx.style()).clone();
     // Transparent panel_fill so the wgpu image shows through the canvas area.
     style.visuals.panel_fill = Color32::TRANSPARENT;
-    style.visuals.window_fill = BG;
-    style.visuals.override_text_color = Some(TEXT);
+    style.visuals.window_fill = SURFACE;
+    style.visuals.override_text_color = Some(TEXT_1);
     // Widget colours (apply to egui's own widgets; custom buttons override per-call)
-    style.visuals.widgets.inactive.bg_fill = BTN;
+    style.visuals.widgets.inactive.bg_fill = RAISED;
     style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, BORDER);
-    style.visuals.widgets.hovered.bg_fill = ACCENT_BG;
-    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT_BDR);
+    style.visuals.widgets.hovered.bg_fill = ACCENT_SOFT;
+    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT_LINE);
     style.visuals.widgets.active.bg_fill = ACCENT_PRESS;
     style.visuals.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT);
     style.visuals.slider_trailing_fill = true;
@@ -286,6 +452,9 @@ pub fn draw_panel(
     params: &EditParams,
     can_undo: bool,
     can_redo: bool,
+    // Save is the primary action only when there is something to save; on
+    // an untouched image it was lit green and meant nothing.
+    dirty: bool,
     thumbs: &ThumbCache,
     icons: &Icons,
     open_sections: &mut [bool; 6],
@@ -298,15 +467,32 @@ pub fn draw_panel(
     egui::SidePanel::right("editor_rail")
         .resizable(false)
         .exact_width(t.rail_w)
-        .frame(Frame::none().fill(BG).stroke(Stroke::new(1.0, BORDER)))
+        .frame(Frame::none().fill(SURFACE).stroke(Stroke::new(1.0, BORDER)))
         .show(ctx, |ui| {
             ui.set_width(t.rail_w);
 
             header_row(ui, &t, "FILE", |ui| {
-                if icon_btn_primary(ui, &t, &icons.save, "Save").clicked() {
+                if Button::new(
+                    if dirty {
+                        Kind::Primary
+                    } else {
+                        Kind::Secondary
+                    },
+                    "Save",
+                )
+                .icon(Some(&icons.save))
+                .size(t.btn())
+                .show(ui)
+                .clicked()
+                {
                     action.save = true;
                 }
-                if icon_btn(ui, &t, &icons.save_as, "Save As").clicked() {
+                if Button::new(Kind::Secondary, "Save As")
+                    .icon(Some(&icons.save_as))
+                    .size(t.btn())
+                    .show(ui)
+                    .clicked()
+                {
                     action.save_as = true;
                 }
             });
@@ -323,16 +509,31 @@ pub fn draw_panel(
                 };
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icon_btn_danger(ui, &t, &icons.reset, labels.2).clicked() {
+                    if Button::new(Kind::Danger, labels.2)
+                        .icon(Some(&icons.reset))
+                        .size(t.btn())
+                        .show(ui)
+                        .clicked()
+                    {
                         action.reset_all = true;
                     }
                     ui.add_enabled_ui(can_redo, |ui| {
-                        if icon_btn(ui, &t, &icons.redo, labels.1).clicked() {
+                        if Button::new(Kind::Secondary, labels.1)
+                            .icon(Some(&icons.redo))
+                            .size(t.btn())
+                            .show(ui)
+                            .clicked()
+                        {
                             action.redo = true;
                         }
                     });
                     ui.add_enabled_ui(can_undo, |ui| {
-                        if icon_btn(ui, &t, &icons.undo, labels.0).clicked() {
+                        if Button::new(Kind::Secondary, labels.0)
+                            .icon(Some(&icons.undo))
+                            .size(t.btn())
+                            .show(ui)
+                            .clicked()
+                        {
                             action.undo = true;
                         }
                     });
@@ -412,10 +613,152 @@ pub fn draw_panel(
     action
 }
 
-// ── Button appearance ─────────────────────────────────────────────────────────
+// ── Button ────────────────────────────────────────────────────────────────────
+
+/// What a button does, which decides its colours.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    /// The one default action in a group, filled with the accent: Save with
+    /// unsaved edits, a dialog's confirm.
+    Primary,
+    Secondary,
+    /// Destroys or replaces something: Delete, Replace, Reset.
+    Danger,
+}
+
+/// Size of a button. The rail's scales with the window (`T::btn`); dialogs
+/// and chips are fixed.
+#[derive(Clone, Copy)]
+pub struct BtnSize {
+    pub h: f32,
+    pub font: f32,
+    pub icon: f32,
+    pub pad: f32,
+    pub gap: f32,
+    pub radius: f32,
+    pub min_w: f32,
+}
+
+impl BtnSize {
+    pub const DIALOG: Self = Self {
+        h: 32.0,
+        font: BODY,
+        icon: 14.0,
+        pad: 12.0,
+        gap: 6.0,
+        radius: 5.0,
+        min_w: 72.0,
+    };
+    pub const CHIP: Self = Self {
+        h: 26.0,
+        font: CAPTION + 1.0,
+        icon: 12.0,
+        pad: 8.0,
+        gap: 4.0,
+        radius: 4.0,
+        min_w: 0.0,
+    };
+}
+
+/// A button, built with `Button::new(kind, label)` and the setters, then
+/// drawn with `show`. Every button in Patina is one of these.
+pub struct Button<'a> {
+    kind: Kind,
+    label: &'a str,
+    icon: Option<&'a TextureHandle>,
+    size: BtnSize,
+    width: Option<f32>,
+    selected: bool,
+}
+
+impl<'a> Button<'a> {
+    pub fn new(kind: Kind, label: &'a str) -> Self {
+        Self {
+            kind,
+            label,
+            icon: None,
+            size: BtnSize::DIALOG,
+            width: None,
+            selected: false,
+        }
+    }
+    pub fn icon(mut self, icon: Option<&'a TextureHandle>) -> Self {
+        self.icon = icon;
+        self
+    }
+    pub fn size(mut self, size: BtnSize) -> Self {
+        self.size = size;
+        self
+    }
+    /// An exact width with the content centred; content-fitted otherwise.
+    pub fn width(mut self, w: f32) -> Self {
+        self.width = Some(w);
+        self
+    }
+    /// A toggle or a choice that is on: Flip, the chosen format.
+    pub fn selected(mut self, on: bool) -> Self {
+        self.selected = on;
+        self
+    }
+
+    pub fn show(self, ui: &mut Ui) -> Response {
+        let s = self.size;
+        let font = egui::FontId::proportional(s.font);
+        let galley = ui.fonts(|f| f.layout_no_wrap(self.label.to_string(), font, TEXT_1));
+        let lbl_w = galley.size().x;
+        let ic_w = match (self.icon.is_some(), self.label.is_empty()) {
+            (false, _) => 0.0,
+            (true, true) => s.icon,
+            (true, false) => s.icon + s.gap,
+        };
+        let content_w = ic_w + lbl_w;
+        let w = self.width.unwrap_or((content_w + 2.0 * s.pad).max(s.min_w));
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, s.h), Sense::click());
+        if !ui.is_rect_visible(rect) {
+            return resp;
+        }
+
+        let state = BtnState::from_resp(&resp, ui);
+        let (bg, fg, border) = btn_colors(self.kind, state, self.selected);
+        let p = ui.painter();
+        let r = Rounding::same(s.radius);
+        p.rect_filled(rect, r, bg);
+        if let Some(c) = border {
+            p.rect_stroke(rect, r, Stroke::new(1.0, c));
+        }
+        if resp.has_focus() {
+            p.rect_stroke(
+                rect.expand(2.0),
+                Rounding::same(s.radius + 2.0),
+                Stroke::new(2.0, ACCENT_LINE),
+            );
+        }
+
+        let mut x = rect.center().x - content_w * 0.5;
+        if let Some(tex) = self.icon {
+            let ir = Rect::from_min_size(
+                egui::pos2(x, rect.center().y - s.icon * 0.5),
+                Vec2::splat(s.icon),
+            );
+            p.image(
+                tex.id(),
+                ir,
+                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                fg,
+            );
+            x += ic_w;
+        }
+        p.galley_with_override_text_color(
+            egui::pos2(x, rect.center().y - galley.size().y * 0.5),
+            galley,
+            fg,
+        );
+        resp
+    }
+}
 
 /// The visual state of a button, derived from its egui response.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum BtnState {
     Rest,
     Hover,
@@ -426,307 +769,33 @@ enum BtnState {
 impl BtnState {
     fn from_resp(resp: &Response, ui: &Ui) -> Self {
         if !ui.is_enabled() {
-            return Self::Disabled;
+            Self::Disabled
+        } else if resp.is_pointer_button_down_on() {
+            Self::Press
+        } else if resp.hovered() {
+            Self::Hover
+        } else {
+            Self::Rest
         }
-        if resp.is_pointer_button_down_on() {
-            return Self::Press;
-        }
-        if resp.hovered() {
-            return Self::Hover;
-        }
-        Self::Rest
     }
 }
 
-/// Colour triple (bg, fg, border) for a standard dark button.
-fn default_btn_colors(state: BtnState) -> (Color32, Color32, Color32) {
-    match state {
-        BtnState::Rest => (BTN, TEXT, BORDER),
-        BtnState::Hover => (ACCENT_BG, ACCENT, ACCENT_BDR),
-        BtnState::Press => (ACCENT_PRESS, ACCENT, ACCENT_BDR),
-        BtnState::Disabled => (BTN, FAINT, BORDER),
+/// Fill, text and outline for every button there is.
+fn btn_colors(kind: Kind, state: BtnState, selected: bool) -> (Color32, Color32, Option<Color32>) {
+    use BtnState::*;
+    match (kind, state) {
+        (_, Disabled) => (SURFACE, TEXT_DISABLED, Some(BORDER)),
+        (Kind::Primary, Rest) => (ACCENT, ON_ACCENT, None),
+        (Kind::Primary, Hover) => (ACCENT_HOVER, ON_ACCENT, None),
+        (Kind::Primary, Press) => (ACCENT_PRESS, ON_ACCENT, None),
+        (Kind::Danger, Rest) => (RAISED, DANGER, Some(BORDER)),
+        (Kind::Danger, Hover) => (DANGER_SOFT, DANGER, Some(DANGER_LINE)),
+        (Kind::Danger, Press) => (DANGER_SOFT, DANGER, Some(DANGER)),
+        (Kind::Secondary, _) if selected => (ACCENT_SOFT, ACCENT, Some(ACCENT_LINE)),
+        (Kind::Secondary, Rest) => (RAISED, TEXT_1, Some(BORDER)),
+        (Kind::Secondary, Hover) => (RAISED_HOVER, TEXT_1, Some(BORDER_STRONG)),
+        (Kind::Secondary, Press) => (ACCENT_SOFT, ACCENT, Some(ACCENT_LINE)),
     }
-}
-
-/// Colour triple for the danger (Reset/Delete) button variant.
-fn danger_btn_colors(state: BtnState) -> (Color32, Color32, Color32) {
-    match state {
-        BtnState::Rest => (BTN, TEXT, BORDER),
-        BtnState::Hover => (DANGER_BG, DANGER, DANGER_BDR),
-        BtnState::Press => (DANGER_PR, DANGER, DANGER_BDR),
-        BtnState::Disabled => (BTN, FAINT, BORDER),
-    }
-}
-
-// ── Button painter (shared core) ──────────────────────────────────────────────
-
-/// Geometry spec for a button's icon + label layout.
-struct BtnLayout {
-    rect: Rect,
-    /// X position where icon starts.
-    icon_x: f32,
-    /// X position where text starts (after icon + gap, or = icon_x if no icon).
-    text_x: f32,
-    icon_sz: f32,
-}
-
-/// Allocate a button rect and compute icon/text positions.
-/// `width = None` → content-fitted width; `Some(w)` → exact width (centred content).
-fn alloc_btn(
-    ui: &mut Ui,
-    label: &str,
-    has_icon: bool,
-    font_sz: f32,
-    height: f32,
-    width: Option<f32>,
-    icon_sz: f32,
-    pad: f32,
-    gap: f32,
-) -> (BtnLayout, Response) {
-    let lbl_w = if label.is_empty() {
-        0.0
-    } else {
-        ui.fonts(|f| {
-            f.layout_no_wrap(label.to_string(), egui::FontId::proportional(font_sz), TEXT)
-                .size()
-                .x
-        })
-    };
-    let ic_w = if has_icon {
-        icon_sz + if label.is_empty() { 0.0 } else { gap }
-    } else {
-        0.0
-    };
-    let content_w = ic_w + lbl_w;
-    // Icon-only buttons use symmetric padding; labelled buttons use full pad on both sides.
-    let effective_pad = if label.is_empty() && has_icon {
-        pad * 0.75
-    } else {
-        pad
-    };
-    let btn_w = width.unwrap_or(effective_pad + content_w + effective_pad);
-
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(btn_w, height), Sense::click());
-
-    let start_x = if width.is_some() {
-        // Centre content within fixed-width button
-        rect.center().x - content_w * 0.5
-    } else {
-        rect.min.x + pad
-    };
-
-    let layout = BtnLayout {
-        rect,
-        icon_x: start_x,
-        text_x: start_x + ic_w,
-        icon_sz,
-    };
-    (layout, resp)
-}
-
-/// Paint a button given its layout, colours, optional icon, and label.
-fn paint_btn(
-    ui: &Ui,
-    layout: &BtnLayout,
-    radius: f32,
-    bg: Color32,
-    fg: Color32,
-    border: Option<(f32, Color32)>,
-    icon: Option<&TextureHandle>,
-    label: &str,
-    font_sz: f32,
-) {
-    let p = ui.painter();
-    let r = Rounding::same(radius);
-    p.rect_filled(layout.rect, r, bg);
-    if let Some((w, c)) = border {
-        p.rect_stroke(layout.rect, r, Stroke::new(w, c));
-    }
-    if let Some(tex) = icon {
-        let ic_rect = Rect::from_min_size(
-            egui::pos2(layout.icon_x, layout.rect.center().y - layout.icon_sz * 0.5),
-            Vec2::splat(layout.icon_sz),
-        );
-        p.image(
-            tex.id(),
-            ic_rect,
-            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            fg,
-        );
-    }
-    p.text(
-        egui::pos2(layout.text_x, layout.rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        egui::FontId::proportional(font_sz),
-        fg,
-    );
-}
-
-// ── Named button variants (thin wrappers over the shared core) ────────────────
-
-/// Standard dark button with icon — used for Save As, Undo, Redo.
-fn icon_btn(ui: &mut Ui, t: &T, icon: &TextureHandle, label: &str) -> Response {
-    let (layout, resp) = alloc_btn(
-        ui,
-        label,
-        true,
-        t.text_btn,
-        t.btn_h,
-        None,
-        t.icon,
-        t.gap,
-        (t.u * 0.39).max(5.0),
-    );
-    let (bg, fg, bdr) = default_btn_colors(BtnState::from_resp(&resp, ui));
-    paint_btn(
-        ui,
-        &layout,
-        t.radius,
-        bg,
-        fg,
-        Some((1.0, bdr)),
-        Some(icon),
-        label,
-        t.text_btn,
-    );
-    resp
-}
-
-/// Solid-accent primary button — Save only.
-fn icon_btn_primary(ui: &mut Ui, t: &T, icon: &TextureHandle, label: &str) -> Response {
-    let (layout, resp) = alloc_btn(
-        ui,
-        label,
-        true,
-        t.text_btn,
-        t.btn_h,
-        None,
-        t.icon,
-        t.gap,
-        (t.u * 0.39).max(5.0),
-    );
-    let bg = if resp.is_pointer_button_down_on() {
-        ACCENT_DIM
-    } else if resp.hovered() {
-        ACCENT_HOVER
-    } else {
-        ACCENT
-    };
-    paint_btn(
-        ui,
-        &layout,
-        t.radius,
-        bg,
-        ON_PRIMARY,
-        None,
-        Some(icon),
-        label,
-        t.text_btn,
-    );
-    resp
-}
-
-/// Danger-tint button — Reset only.
-fn icon_btn_danger(ui: &mut Ui, t: &T, icon: &TextureHandle, label: &str) -> Response {
-    let (layout, resp) = alloc_btn(
-        ui,
-        label,
-        true,
-        t.text_btn,
-        t.btn_h,
-        None,
-        t.icon,
-        t.gap,
-        (t.u * 0.39).max(5.0),
-    );
-    let (bg, fg, bdr) = danger_btn_colors(BtnState::from_resp(&resp, ui));
-    paint_btn(
-        ui,
-        &layout,
-        t.radius,
-        bg,
-        fg,
-        Some((1.0, bdr)),
-        Some(icon),
-        label,
-        t.text_btn,
-    );
-    resp
-}
-
-/// Full-width momentary button for the transform grid (Rotate left/right).
-fn icon_btn_full(ui: &mut Ui, t: &T, icon: &TextureHandle, label: &str, width: f32) -> Response {
-    let (layout, resp) = alloc_btn(
-        ui,
-        label,
-        true,
-        t.text_btn,
-        t.btn_h,
-        Some(width),
-        t.icon,
-        t.gap,
-        (t.u * 0.39).max(5.0),
-    );
-    // Rotate buttons: hover tints but never persist after release.
-    let (bg, fg, bdr) = default_btn_colors(if resp.hovered() {
-        BtnState::Hover
-    } else {
-        BtnState::Rest
-    });
-    paint_btn(
-        ui,
-        &layout,
-        t.radius,
-        bg,
-        fg,
-        Some((1.0, bdr)),
-        Some(icon),
-        label,
-        t.text_btn,
-    );
-    resp
-}
-
-/// Full-width toggle button for the transform grid (Flip H/V).
-fn icon_btn_toggle_full(
-    ui: &mut Ui,
-    t: &T,
-    icon: &TextureHandle,
-    label: &str,
-    active: bool,
-    width: f32,
-) -> Response {
-    let (layout, resp) = alloc_btn(
-        ui,
-        label,
-        true,
-        t.text_btn,
-        t.btn_h,
-        Some(width),
-        t.icon,
-        t.gap,
-        (t.u * 0.39).max(5.0),
-    );
-    let (bg, fg, bdr, bdr_w) = if active {
-        (ACCENT_BG, ACCENT, ACCENT, 1.0f32)
-    } else if resp.hovered() {
-        (ACCENT_BG, ACCENT, ACCENT_BDR, 1.0)
-    } else {
-        (BTN, TEXT, BORDER, 1.0)
-    };
-    paint_btn(
-        ui,
-        &layout,
-        t.radius,
-        bg,
-        fg,
-        Some((bdr_w, bdr)),
-        Some(icon),
-        label,
-        t.text_btn,
-    );
-    resp
 }
 
 // ── Structural layout helpers ─────────────────────────────────────────────────
@@ -740,13 +809,13 @@ fn header_row(ui: &mut Ui, t: &T, label: &str, add_buttons: impl FnOnce(&mut Ui)
 
     let dot_cx = rect.min.x + t.row_x + t.dot;
     ui.painter()
-        .circle_filled(egui::pos2(dot_cx, cy), t.dot * 0.5, FAINT);
+        .circle_filled(egui::pos2(dot_cx, cy), t.dot * 0.5, TEXT_3);
     ui.painter().text(
         egui::pos2(dot_cx + t.dot + t.gap_t, cy),
         egui::Align2::LEFT_CENTER,
         label,
-        egui::FontId::proportional(t.text_sec),
-        TEXT,
+        egui::FontId::proportional(t.caption),
+        TEXT_1,
     );
 
     let btn_x = rect.min.x + t.row_x + t.dot * 2.0 + t.gap_t + t.label_w + t.gap_t;
@@ -775,24 +844,20 @@ fn section(ui: &mut Ui, t: &T, icons: &Icons, title: &str, open: &mut bool) -> b
     let cy = rect.center().y;
 
     if resp.hovered() {
-        pt.rect_filled(rect, Rounding::ZERO, Color32::from_white_alpha(5));
+        pt.rect_filled(rect, Rounding::ZERO, RAISED);
     }
 
     // Spruce dot with halo
     let cx = rect.min.x + t.row_x + t.dot;
-    pt.circle_filled(
-        egui::pos2(cx, cy),
-        t.dot * 0.83,
-        Color32::from_rgba_premultiplied(25, 47, 41, 41),
-    );
+    pt.circle_filled(egui::pos2(cx, cy), t.dot * 0.83, ACCENT_SOFT);
     pt.circle_filled(egui::pos2(cx, cy), t.dot * 0.50, ACCENT);
 
     pt.text(
         egui::pos2(cx + t.dot * 1.5 + t.gap_t * 0.5, cy),
         egui::Align2::LEFT_CENTER,
         title,
-        egui::FontId::proportional(t.text_sec),
-        TEXT,
+        egui::FontId::proportional(t.caption),
+        TEXT_1,
     );
 
     // Chevron: image when open (▾), line segments when closed (›)
@@ -807,12 +872,12 @@ fn section(ui: &mut Ui, t: &T, icons: &Icons, title: &str, open: &mut bool) -> b
             icons.chevron.id(),
             ic_rect,
             Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            DIM,
+            TEXT_2,
         );
     } else {
         let xi = ic_rect.min.x + ic_sz.x * 0.3;
         let xo = ic_rect.max.x - ic_sz.x * 0.3;
-        let mk = Stroke::new(1.5, DIM);
+        let mk = Stroke::new(1.5, TEXT_2);
         pt.line_segment(
             [
                 egui::pos2(xi, ic_rect.min.y + ic_sz.y * 0.2),
@@ -855,7 +920,7 @@ fn draw_presets(
     let tile_w =
         ((t.rail_w - t.row_x * 2.0 - spacing * (cols as f32 - 1.0)) / cols as f32).max(88.0);
     let thumb_h = tile_w * 0.75;
-    let lbl_h = t.row_y * 0.5 + t.text_btn + t.row_y * 0.5;
+    let lbl_h = t.row_y * 0.5 + t.body + t.row_y * 0.5;
     let tile_h = thumb_h + lbl_h;
 
     for (g_idx, grp) in PRESET_GROUPS.iter().enumerate() {
@@ -872,8 +937,8 @@ fn draw_presets(
             .show(ui, |ui| {
                 ui.label(
                     RichText::new(grp.name)
-                        .color(FAINT)
-                        .size(t.text_sub)
+                        .color(TEXT_3)
+                        .size(t.caption)
                         .strong(),
                 );
             });
@@ -903,9 +968,9 @@ fn draw_presets(
 
                 // Tile background: subtle hover tint (same toggle logic as flip buttons)
                 let tile_bg = if resp.hovered() && !active {
-                    Color32::from_rgba_premultiplied(20, 38, 34, 28)
+                    ACCENT_SOFT
                 } else {
-                    BG_DEEP
+                    SURFACE_SUNKEN
                 };
                 p.rect_filled(tile, Rounding::same(t.radius), tile_bg);
 
@@ -930,7 +995,7 @@ fn draw_presets(
                         icons.check.id(),
                         Rect::from_center_size(bc, Vec2::splat(t.icon_chk)),
                         Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        ON_PRIMARY,
+                        ON_ACCENT,
                     );
                 }
 
@@ -947,17 +1012,17 @@ fn draw_presets(
                         sw: t.radius,
                         se: t.radius,
                     },
-                    BG_DEEP,
+                    SURFACE_SUNKEN,
                 );
                 p.text(
                     lbl_rect.center(),
                     egui::Align2::CENTER_CENTER,
                     preset.label(),
-                    egui::FontId::proportional(t.text_sld),
+                    egui::FontId::proportional(t.body),
                     if active || resp.hovered() {
                         ACCENT
                     } else {
-                        TEXT
+                        TEXT_1
                     },
                 );
 
@@ -965,7 +1030,7 @@ fn draw_presets(
                 let (sc, sw) = if active {
                     (ACCENT, 1.5)
                 } else if resp.hovered() {
-                    (ACCENT_BDR, 1.0)
+                    (ACCENT_LINE, 1.0)
                 } else {
                     (BORDER, 1.0)
                 };
@@ -1004,20 +1069,46 @@ fn draw_transform(
             ui.spacing_mut().item_spacing = Vec2::new(t.gap, t.gap);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = t.gap;
-                if icon_btn_full(ui, t, &icons.rotate_left, "Rotate left", btn_w).clicked() {
+                if Button::new(Kind::Secondary, "Rotate left")
+                    .icon(Some(&icons.rotate_left))
+                    .size(t.btn())
+                    .width(btn_w)
+                    .show(ui)
+                    .clicked()
+                {
                     action.rot_ccw = true;
                 }
-                if icon_btn_full(ui, t, &icons.rotate_right, "Rotate right", btn_w).clicked() {
+                if Button::new(Kind::Secondary, "Rotate right")
+                    .icon(Some(&icons.rotate_right))
+                    .size(t.btn())
+                    .width(btn_w)
+                    .show(ui)
+                    .clicked()
+                {
                     action.rot_cw = true;
                 }
             });
             ui.add_space(t.gap);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = t.gap;
-                if icon_btn_toggle_full(ui, t, &icons.flip_h, "Flip H", p.flip_h, btn_w).clicked() {
+                if Button::new(Kind::Secondary, "Flip H")
+                    .icon(Some(&icons.flip_h))
+                    .size(t.btn())
+                    .selected(p.flip_h)
+                    .width(btn_w)
+                    .show(ui)
+                    .clicked()
+                {
                     action.flip_h = true;
                 }
-                if icon_btn_toggle_full(ui, t, &icons.flip_v, "Flip V", p.flip_v, btn_w).clicked() {
+                if Button::new(Kind::Secondary, "Flip V")
+                    .icon(Some(&icons.flip_v))
+                    .size(t.btn())
+                    .selected(p.flip_v)
+                    .width(btn_w)
+                    .show(ui)
+                    .clicked()
+                {
                     action.flip_v = true;
                 }
             });
@@ -1061,8 +1152,8 @@ fn scale_slider(ui: &mut Ui, t: &T, p: &mut EditParams) -> bool {
                     lr.left_center(),
                     egui::Align2::LEFT_CENTER,
                     "Scale",
-                    egui::FontId::proportional(t.text_sld),
-                    DIM,
+                    egui::FontId::proportional(t.body),
+                    TEXT_2,
                 );
                 ui.add(
                     egui::Slider::new(&mut sv, 0.0..=1.0)
@@ -1074,8 +1165,8 @@ fn scale_slider(ui: &mut Ui, t: &T, p: &mut EditParams) -> bool {
                     vr.right_center(),
                     egui::Align2::RIGHT_CENTER,
                     format!("{:.2}", p.scale),
-                    egui::FontId::proportional(t.text_sld),
-                    TEXT,
+                    egui::FontId::proportional(t.body),
+                    TEXT_1,
                 );
             });
         });
@@ -1144,8 +1235,8 @@ fn draw_sliders(ui: &mut Ui, t: &T, defs: &mut [SD<'_>]) -> bool {
                         lr.left_center(),
                         egui::Align2::LEFT_CENTER,
                         def.label,
-                        egui::FontId::proportional(t.text_sld),
-                        DIM,
+                        egui::FontId::proportional(t.body),
+                        TEXT_2,
                     );
 
                     let slider = egui::Slider::new(def.value, def.range.clone())
@@ -1174,8 +1265,8 @@ fn draw_sliders(ui: &mut Ui, t: &T, defs: &mut [SD<'_>]) -> bool {
                         vr.right_center(),
                         egui::Align2::RIGHT_CENTER,
                         display,
-                        egui::FontId::proportional(t.text_sld - 0.5),
-                        TEXT,
+                        egui::FontId::monospace(t.caption),
+                        TEXT_1,
                     );
                 });
             });
@@ -1218,15 +1309,15 @@ fn draw_exif_section(ui: &mut Ui, t: &T, metadata: Option<&crate::exif::ImageMet
                 None => {
                     ui.label(
                         RichText::new("No EXIF data available")
-                            .color(FAINT)
-                            .size(t.text_sld),
+                            .color(TEXT_3)
+                            .size(t.body),
                     );
                 }
                 Some(meta) if meta.is_empty() => {
                     ui.label(
                         RichText::new("No EXIF data available")
-                            .color(FAINT)
-                            .size(t.text_sld),
+                            .color(TEXT_3)
+                            .size(t.body),
                     );
                 }
                 Some(meta) => {
@@ -1236,21 +1327,21 @@ fn draw_exif_section(ui: &mut Ui, t: &T, metadata: Option<&crate::exif::ImageMet
                             // Label column: fixed width, dimmed
                             let (_, lr) = ui.allocate_space(egui::Vec2::new(
                                 t.slbl_w + t.sval_w * 0.5,
-                                t.text_sld * 1.6,
+                                t.body * 1.6,
                             ));
                             ui.painter().text(
                                 lr.left_center(),
                                 egui::Align2::LEFT_CENTER,
                                 field.label,
-                                egui::FontId::proportional(t.text_sld - 0.5),
-                                FAINT,
+                                egui::FontId::proportional(t.caption),
+                                TEXT_3,
                             );
                             // Value: wrapping, full brightness
                             ui.with_layout(
                                 egui::Layout::left_to_right(egui::Align::Center),
                                 |ui| {
                                     ui.label(
-                                        RichText::new(&field.value).color(TEXT).size(t.text_sld),
+                                        RichText::new(&field.value).color(TEXT_1).size(t.body),
                                     );
                                 },
                             );

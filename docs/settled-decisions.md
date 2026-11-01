@@ -127,6 +127,25 @@ survives one relaunch and the file never grows across runs. A panic is logged be
 `#![windows_subsystem = "windows"]` applies to release builds only; debug builds and `cargo run` keep the console.
 **Not a release yet**: a user cannot find the file without being told the path (docs/roadmap.md).
 
+## One palette, measured; one button; Inter (2026-11-01)
+**Colours** live only in `ui::tok` (`src/ui.rs`): green-tinted neutrals, and an accent that marks meaning —
+changed, the default action, selected, focused — never decoration. Every text colour reaches WCAG AA (4.5:1) on
+each surface it is drawn on, and `tok::tests` computes it from the hex values; the old faint grey measured 2.6:1.
+The test overruled the review's own table twice: its DANGER `#E0654A` is 4.4:1 on a raised button, so DANGER is
+`#E67458`; its disabled glyph (BORDER_STRONG) was 1.4:1 and vanished, so disabled is `TEXT_DISABLED`, about 3:1
+— exempt from AA, but visible. Tokens are opaque except three drawn over the photo (scrim, guides, label ring).
+**egui's theme is pinned dark** (`follow_system_theme: false`): following a light OS gave egui's own text fields
+and checkboxes light defaults inside dark dialogs.
+**One button** (`ui::Button`, kinds Primary / Secondary / Danger) replaces five rail variants, the dialogs' painter
+and the Save As chips. It draws a focus ring, since Tab now moves focus; Enter on a focused button is a click, and
+a click wins over the dialog's Enter-means-first-button (`enter_on_a_focused_cancel_cancels_the_delete`). **Save is
+primary only with unsaved edits.**
+**Inter** 4.1 Regular and SemiBold, from the rsms/inter release (SIL OFL, licence beside them in
+`src/assets/fonts/`), +857 KB on the exe; egui's fonts stay behind it for missing glyphs. egui has no weights, so
+SemiBold is its own family for titles. Three type steps; slider values are monospace so they do not jitter.
+**Icons are rasterised at the pixel size they are drawn**, re-rasterised when the window height or display scale
+changes it; scaling the SVGs' 24 px down to 12–17 px blurred them.
+
 ## Paths are used as given — no `canonicalize` (inherited)
 `std::fs::canonicalize` on Windows returns a verbatim `\\?\C:\…` path, which breaks paths handed over by
 archivers. **Build-enforced**: both `canonicalize` functions are banned in `clippy.toml`, and

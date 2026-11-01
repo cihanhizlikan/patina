@@ -67,8 +67,6 @@ const SLIDER_DEBOUNCE_MS: u128 = 80;
 const MIN_WINDOW: (f32, f32) = (400.0, 300.0);
 /// Default window size when no image is provided at launch.
 const DEFAULT_WINDOW: (u32, u32) = (900, 680);
-/// Canvas background colour — matches ui::CANVAS (#0e0e10).
-const CANVAS_COLOR: egui::Color32 = egui::Color32::from_rgb(0x0E, 0x0E, 0x10);
 /// How long each image is shown during slideshow.
 const SLIDESHOW_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -1372,8 +1370,9 @@ impl App {
         if let Some(tc) = &mut self.thumb_cache {
             tc.upload(ctx);
         }
-        if self.icon_cache.is_none() {
-            self.icon_cache = Some(Icons::load(ctx));
+        let px = ui::icon_px(ctx);
+        if self.icon_cache.as_ref().map(|i| i.px) != Some(px) {
+            self.icon_cache = Some(Icons::load(ctx, px));
         }
     }
 
@@ -1403,6 +1402,7 @@ impl App {
             &params,
             can_undo,
             can_redo,
+            self.editor_params_changed(),
             self.thumb_cache.as_ref().unwrap(),
             self.icon_cache.as_ref().unwrap(),
             &mut self.editor_open_sections,
@@ -1418,7 +1418,7 @@ impl App {
     /// Draw the canvas (CentralPanel): image, scroll navigation, drag-and-drop.
     fn draw_canvas(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(CANVAS_COLOR))
+            .frame(egui::Frame::none().fill(ui::tok::CANVAS))
             .show(ctx, |ui| {
                 self.draw_canvas_image(ui);
                 self.draw_label_overlay(ui);
@@ -1558,7 +1558,7 @@ impl App {
                     egui::pos2(cx, cy),
                     star_sz * 0.48,
                     star_sz * 0.20,
-                    egui::Color32::from_rgb(0xF5, 0xC5, 0x30),
+                    ui::tok::STAR,
                 );
             }
         }
@@ -1572,7 +1572,7 @@ impl App {
             p.circle_stroke(
                 egui::pos2(cx, cy),
                 dot_r,
-                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(80)),
+                egui::Stroke::new(1.0, ui::tok::ON_PHOTO_RING),
             );
         }
     }
@@ -1740,13 +1740,13 @@ fn consume_shortcut(i: &mut egui::InputState, mods: egui::Modifiers, key: egui::
 // ── Help modal ────────────────────────────────────────────────────────────────
 
 fn draw_help_modal(ctx: &egui::Context, in_editor: bool, show: &mut bool) {
-    use ui::{ACCENT, BG, BORDER, DIM, FAINT, TEXT};
+    use ui::tok::{ACCENT, BORDER, SURFACE, TEXT_1, TEXT_2, TEXT_3};
 
     ctx.layer_painter(egui::LayerId::new(
         egui::Order::Background,
         egui::Id::new("help_dim"),
     ))
-    .rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(160));
+    .rect_filled(ctx.screen_rect(), 0.0, ui::tok::SCRIM);
 
     egui::Window::new("help_modal")
         .title_bar(false)
@@ -1755,7 +1755,7 @@ fn draw_help_modal(ctx: &egui::Context, in_editor: bool, show: &mut bool) {
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .frame(
             egui::Frame::none()
-                .fill(BG)
+                .fill(SURFACE)
                 .stroke(egui::Stroke::new(1.0, BORDER))
                 .rounding(egui::Rounding::same(10.0))
                 .inner_margin(24.0),
@@ -1763,13 +1763,12 @@ fn draw_help_modal(ctx: &egui::Context, in_editor: bool, show: &mut bool) {
         .show(ctx, |ui| {
             ui.set_width(480.0);
             ui.visuals_mut().override_text_color = None;
-            ui.visuals_mut().widgets.noninteractive.fg_stroke.color = TEXT;
+            ui.visuals_mut().widgets.noninteractive.fg_stroke.color = TEXT_1;
 
             ui.label(
                 egui::RichText::new("Keyboard Shortcuts")
-                    .color(TEXT)
-                    .size(16.0)
-                    .strong(),
+                    .color(TEXT_1)
+                    .font(ui::title_font(ui::TITLE)),
             );
             ui.add_space(12.0);
 
@@ -1785,12 +1784,12 @@ fn draw_help_modal(ctx: &egui::Context, in_editor: bool, show: &mut bool) {
                         egui::FontId::monospace(12.0),
                         ACCENT,
                     );
-                    ui.label(egui::RichText::new(desc).color(TEXT).size(12.0));
+                    ui.label(egui::RichText::new(desc).color(TEXT_1).size(12.0));
                 });
             };
             let section = |ui: &mut egui::Ui, title: &str| {
                 ui.add_space(8.0);
-                ui.label(egui::RichText::new(title).color(FAINT).size(10.5).strong());
+                ui.label(egui::RichText::new(title).color(TEXT_3).size(ui::CAPTION));
                 ui.add_space(2.0);
             };
 
@@ -1829,7 +1828,7 @@ fn draw_help_modal(ctx: &egui::Context, in_editor: bool, show: &mut bool) {
             ui.add_space(6.0);
             ui.label(
                 egui::RichText::new("H or Esc to close")
-                    .color(DIM)
+                    .color(TEXT_2)
                     .size(11.0),
             );
         });
@@ -1868,7 +1867,7 @@ fn draw_star(p: &egui::Painter, centre: egui::Pos2, r_out: f32, r_in: f32, color
 }
 
 fn draw_guides(ui: &egui::Ui, r: egui::Rect, guides: Guides) {
-    const LINE_COLOR: egui::Color32 = egui::Color32::from_rgba_premultiplied(255, 255, 255, 60);
+    const LINE_COLOR: egui::Color32 = ui::tok::GUIDE;
     const STROKE: egui::Stroke = egui::Stroke {
         width: 1.0,
         color: LINE_COLOR,
@@ -2013,137 +2012,20 @@ fn upload_image_texture(
     });
 }
 
-// ── Modal button painter ──────────────────────────────────────────────────────
-//
-// Single implementation shared by both `draw_modal` and `draw_save_as_modal`.
-// All modal buttons use the same layout, paint logic, and colour vocabulary.
-
-#[derive(Clone, Copy)]
-#[allow(dead_code)] // `Danger` reserved for future destructive confirmation dialogs
-enum ModalBtnKind {
-    Primary,
-    Default,
-    Danger,
-}
-
-fn modal_btn(
-    ui: &mut egui::Ui,
-    label: &str,
-    icon: Option<&egui::TextureHandle>,
-    kind: ModalBtnKind,
-) -> egui::Response {
-    use egui::{Rounding, Sense, Stroke, Vec2};
-    use ui::ACCENT_DIM;
-    use ui::{
-        ACCENT, ACCENT_BG, BORDER, BTN, DANGER, DANGER_BDR, DANGER_BG, DANGER_PR, ON_PRIMARY, TEXT,
-    }; // pressed-state for primary
-
-    // Shared layout constants.
-    const PAD: f32 = 12.0;
-    const GAP: f32 = 6.0;
-    const ICON_SZ: f32 = 14.0;
-    const FONT: f32 = 13.0;
-    const HEIGHT: f32 = 32.0;
-    const RADIUS: f32 = 5.0;
-    const HOVER_PRIMARY: egui::Color32 = egui::Color32::from_rgb(0x8D, 0xAF, 0xA0);
-    const PRESS_DEFAULT: egui::Color32 = egui::Color32::from_rgba_premultiplied(35, 68, 59, 56);
-    const HOVER_BDR: egui::Color32 = egui::Color32::from_rgba_premultiplied(71, 86, 79, 115);
-
-    let fg_base = if matches!(kind, ModalBtnKind::Primary) {
-        ON_PRIMARY
-    } else {
-        TEXT
-    };
-    let ic_w = if icon.is_some() { ICON_SZ + GAP } else { 0.0 };
-    let lbl_w = ui.fonts(|f| {
-        f.layout_no_wrap(label.to_string(), egui::FontId::proportional(FONT), fg_base)
-            .size()
-            .x
-    });
-    let w = (PAD + ic_w + lbl_w + PAD).max(72.0);
-
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, HEIGHT), Sense::click());
-    let pt = ui.painter();
-    let r = Rounding::same(RADIUS);
-    let down = resp.is_pointer_button_down_on();
-    let hov = resp.hovered();
-
-    let (bg, fg, border) = match kind {
-        ModalBtnKind::Primary => {
-            let bg = if down {
-                ACCENT_DIM
-            } else if hov {
-                HOVER_PRIMARY
-            } else {
-                ACCENT
-            };
-            (bg, ON_PRIMARY, None)
-        }
-        ModalBtnKind::Default => {
-            let (bg, fg, bdr) = if down {
-                (PRESS_DEFAULT, ACCENT, HOVER_BDR)
-            } else if hov {
-                (ACCENT_BG, ACCENT, HOVER_BDR)
-            } else {
-                (BTN, TEXT, BORDER)
-            };
-            (bg, fg, Some((1.0f32, bdr)))
-        }
-        ModalBtnKind::Danger => {
-            let (bg, fg, bdr) = if down {
-                (DANGER_PR, DANGER, DANGER_BDR)
-            } else if hov {
-                (DANGER_BG, DANGER, DANGER_BDR)
-            } else {
-                (BTN, TEXT, BORDER)
-            };
-            (bg, fg, Some((1.0f32, bdr)))
-        }
-    };
-
-    pt.rect_filled(rect, r, bg);
-    if let Some((sw, sc)) = border {
-        pt.rect_stroke(rect, r, Stroke::new(sw, sc));
-    }
-
-    let mut x = rect.min.x + PAD;
-    if let Some(tex) = icon {
-        let ir = egui::Rect::from_min_size(
-            egui::pos2(x, rect.center().y - ICON_SZ * 0.5),
-            Vec2::splat(ICON_SZ),
-        );
-        pt.image(
-            tex.id(),
-            ir,
-            egui::Rect::from_min_max(egui::pos2(0., 0.), egui::pos2(1., 1.)),
-            fg,
-        );
-        x += ICON_SZ + GAP;
-    }
-    pt.text(
-        egui::pos2(x, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        egui::FontId::proportional(FONT),
-        fg,
-    );
-    resp
-}
-
 // ── Save As modal ─────────────────────────────────────────────────────────────
 
 fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
     let Some(ref mut modal) = app.save_as_modal else {
         return;
     };
-    use ui::{BG, BORDER, DANGER, DIM, TEXT};
+    use ui::tok::{BORDER, DANGER, SURFACE, TEXT_1, TEXT_2};
 
     // Dim at Background so the Window (Middle) is always above it.
     ctx.layer_painter(egui::LayerId::new(
         egui::Order::Background,
         egui::Id::new("saveas_dim"),
     ))
-    .rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(160));
+    .rect_filled(ctx.screen_rect(), 0.0, ui::tok::SCRIM);
 
     let mut confirm = false;
     let mut cancel = false;
@@ -2156,7 +2038,7 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .frame(
             egui::Frame::none()
-                .fill(BG)
+                .fill(SURFACE)
                 .stroke(egui::Stroke::new(1.0, BORDER))
                 .rounding(egui::Rounding::same(10.0))
                 .inner_margin(24.0),
@@ -2165,26 +2047,29 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
             ui.set_width(360.0);
             // Reset global style overrides so modal widgets render at full opacity.
             ui.visuals_mut().override_text_color = None;
-            ui.visuals_mut().widgets.noninteractive.fg_stroke.color = TEXT;
-            ui.visuals_mut().widgets.inactive.fg_stroke.color = TEXT;
+            ui.visuals_mut().widgets.noninteractive.fg_stroke.color = TEXT_1;
+            ui.visuals_mut().widgets.inactive.fg_stroke.color = TEXT_1;
 
             ui.label(
                 egui::RichText::new("Save As")
-                    .color(TEXT)
-                    .size(16.0)
-                    .strong(),
+                    .color(TEXT_1)
+                    .font(ui::title_font(ui::TITLE)),
             );
             ui.add_space(16.0);
 
             // Folder row
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Folder").color(DIM).size(12.0));
+                ui.label(egui::RichText::new("Folder").color(TEXT_2).size(12.0));
                 ui.add_space(4.0);
                 let dir_str = modal.directory.to_string_lossy();
                 let display = truncate_path_display(&dir_str, 38);
-                ui.label(egui::RichText::new(display).color(TEXT).size(12.0));
+                ui.label(egui::RichText::new(display).color(TEXT_1).size(12.0));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if modal_btn(ui, "Browse…", None, ModalBtnKind::Default).clicked() {
+                    if ui::Button::new(ui::Kind::Secondary, "Browse…")
+                        .icon(None)
+                        .show(ui)
+                        .clicked()
+                    {
                         browse = true;
                     }
                 });
@@ -2192,7 +2077,7 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
             ui.add_space(12.0);
 
             // Filename field
-            ui.label(egui::RichText::new("Filename").color(DIM).size(12.0));
+            ui.label(egui::RichText::new("Filename").color(TEXT_2).size(12.0));
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let resp = ui.add(
@@ -2205,19 +2090,24 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
                 }
                 ui.label(
                     egui::RichText::new(format!(".{}", modal.format.extension()))
-                        .color(DIM)
+                        .color(TEXT_2)
                         .size(13.0),
                 );
             });
             ui.add_space(12.0);
 
             // Export preset selector
-            ui.label(egui::RichText::new("Preset").color(DIM).size(12.0));
+            ui.label(egui::RichText::new("Preset").color(TEXT_2).size(12.0));
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 for &(preset, label) in ExportPreset::ALL {
-                    if format_btn(ui, label, modal.preset == preset).clicked() {
+                    if ui::Button::new(ui::Kind::Secondary, label)
+                        .size(ui::BtnSize::CHIP)
+                        .selected(modal.preset == preset)
+                        .show(ui)
+                        .clicked()
+                    {
                         modal.preset = preset;
                         ExportPreset::apply(preset, modal);
                     }
@@ -2226,12 +2116,17 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
             ui.add_space(12.0);
 
             // Format selector
-            ui.label(egui::RichText::new("Format").color(DIM).size(12.0));
+            ui.label(egui::RichText::new("Format").color(TEXT_2).size(12.0));
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 for &fmt in OutputFormat::ALL {
-                    if format_btn(ui, fmt.label(), modal.format == fmt).clicked() {
+                    if ui::Button::new(ui::Kind::Secondary, fmt.label())
+                        .size(ui::BtnSize::CHIP)
+                        .selected(modal.format == fmt)
+                        .show(ui)
+                        .clicked()
+                    {
                         modal.format = fmt;
                         modal.preset = ExportPreset::Custom;
                     }
@@ -2242,7 +2137,7 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
             // Quality slider (JPEG / WebP only)
             if matches!(modal.format, OutputFormat::Jpeg | OutputFormat::WebP) {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Quality").color(DIM).size(12.0));
+                    ui.label(egui::RichText::new("Quality").color(TEXT_2).size(12.0));
                     ui.add_space(8.0);
                     let mut q = modal.quality as f32;
                     if ui
@@ -2262,7 +2157,7 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
 
             // Max dimension (optional resize)
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Max size").color(DIM).size(12.0));
+                ui.label(egui::RichText::new("Max size").color(TEXT_2).size(12.0));
                 ui.add_space(8.0);
                 let mut enabled = modal.max_dim.is_some();
                 if ui.checkbox(&mut enabled, "").changed() {
@@ -2289,7 +2184,7 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
 
             ui.label(
                 egui::RichText::new(format!("→ {}", modal.full_path().display()))
-                    .color(DIM)
+                    .color(TEXT_2)
                     .size(11.0),
             );
             let replacing = modal.replace.as_ref() == Some(&modal.full_path());
@@ -2309,14 +2204,18 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 let (label, kind) = if replacing {
-                    ("Replace", ModalBtnKind::Danger)
+                    ("Replace", ui::Kind::Danger)
                 } else {
-                    ("Save", ModalBtnKind::Primary)
+                    ("Save", ui::Kind::Primary)
                 };
-                if modal_btn(ui, label, None, kind).clicked() {
+                if ui::Button::new(kind, label).icon(None).show(ui).clicked() {
                     confirm = true;
                 }
-                if modal_btn(ui, "Cancel", None, ModalBtnKind::Default).clicked() {
+                if ui::Button::new(ui::Kind::Secondary, "Cancel")
+                    .icon(None)
+                    .show(ui)
+                    .clicked()
+                {
                     cancel = true;
                 }
             });
@@ -2365,55 +2264,6 @@ fn confirm_save_as(app: &mut App) {
     app.commit_save_as(dest, q, d);
 }
 
-/// Paint a format selector pill button (active = spruce accent, inactive = dark with hover).
-fn format_btn(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
-    use ui::{ACCENT, ACCENT_BG, BORDER, BTN, TEXT};
-    const FONT: f32 = 12.0;
-    const HEIGHT: f32 = 26.0;
-    const PAD: f32 = 8.0;
-    const HOVER_BDR: egui::Color32 = egui::Color32::from_rgba_premultiplied(71, 86, 79, 115);
-    const PRESS_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(35, 68, 59, 56);
-
-    let lbl_col = if active { ACCENT } else { TEXT };
-    let lbl_w = ui.fonts(|f| {
-        f.layout_no_wrap(label.to_string(), egui::FontId::proportional(FONT), lbl_col)
-            .size()
-            .x
-    });
-    let (rect, resp) = ui.allocate_exact_size(
-        egui::Vec2::new(lbl_w + PAD * 2.0, HEIGHT),
-        egui::Sense::click(),
-    );
-    let p = ui.painter();
-    let r = egui::Rounding::same(4.0);
-
-    let (bg, fg, stroke_w) = if active {
-        (ACCENT_BG, ACCENT, 1.5f32)
-    } else if resp.is_pointer_button_down_on() {
-        (PRESS_BG, ACCENT, 1.0)
-    } else if resp.hovered() {
-        (ACCENT_BG, ACCENT, 1.0)
-    } else {
-        (BTN, TEXT, 1.0)
-    };
-    let border_col = if active || resp.hovered() || resp.is_pointer_button_down_on() {
-        HOVER_BDR
-    } else {
-        BORDER
-    };
-
-    p.rect_filled(rect, r, bg);
-    p.rect_stroke(rect, r, egui::Stroke::new(stroke_w, border_col));
-    p.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        label,
-        egui::FontId::proportional(FONT),
-        fg,
-    );
-    resp
-}
-
 // ── Main modal ────────────────────────────────────────────────────────────────
 
 /// Draw `modal` and return the button the user clicked, if any. It only reads;
@@ -2424,7 +2274,7 @@ fn draw_modal(
     modal: &ModalDialog,
     icons: Option<&ui::Icons>,
 ) -> Option<ModalAction> {
-    use ui::{BG, BORDER, DANGER, DIM, TEXT};
+    use ui::tok::{BORDER, DANGER, SURFACE, TEXT_1, TEXT_2};
 
     // Dim overlay at Order::Background so the Window (Order::Middle) renders above it.
     // Using Foreground here would paint over the Window, making it appear greyed out.
@@ -2432,7 +2282,7 @@ fn draw_modal(
         egui::Order::Background,
         egui::Id::new("modal_dim"),
     ))
-    .rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(160));
+    .rect_filled(ctx.screen_rect(), 0.0, ui::tok::SCRIM);
 
     let mut action: Option<ModalAction> = None;
 
@@ -2443,7 +2293,7 @@ fn draw_modal(
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .frame(
             egui::Frame::none()
-                .fill(BG)
+                .fill(SURFACE)
                 .stroke(egui::Stroke::new(1.0, BORDER))
                 .rounding(egui::Rounding::same(10.0))
                 .inner_margin(24.0),
@@ -2454,8 +2304,8 @@ fn draw_modal(
             // apply_panel_style sets override_text_color and fg_stroke globally,
             // which bleeds into Window widgets and makes them appear disabled.
             ui.visuals_mut().override_text_color = None;
-            ui.visuals_mut().widgets.noninteractive.fg_stroke.color = TEXT;
-            ui.visuals_mut().widgets.inactive.fg_stroke.color = TEXT;
+            ui.visuals_mut().widgets.noninteractive.fg_stroke.color = TEXT_1;
+            ui.visuals_mut().widgets.inactive.fg_stroke.color = TEXT_1;
 
             let btn_row = |ui: &mut egui::Ui, f: &mut dyn FnMut(&mut egui::Ui)| {
                 ui.add_space(16.0);
@@ -2468,26 +2318,35 @@ fn draw_modal(
                 ModalDialog::SaveOnExit { .. } => {
                     ui.label(
                         egui::RichText::new("Save changes?")
-                            .color(TEXT)
-                            .size(16.0)
-                            .strong(),
+                            .color(TEXT_1)
+                            .font(ui::title_font(ui::TITLE)),
                     );
                     ui.add_space(8.0);
                     ui.label(
                         egui::RichText::new("Your edits will be lost if you don't save.")
-                            .color(DIM)
+                            .color(TEXT_2)
                             .size(13.0),
                     );
                     btn_row(ui, &mut |ui| {
-                        if modal_btn(ui, "Save", icons.map(|ic| &ic.save), ModalBtnKind::Primary)
+                        if ui::Button::new(ui::Kind::Primary, "Save")
+                            .icon(icons.map(|ic| &ic.save))
+                            .show(ui)
                             .clicked()
                         {
                             action = Some(ModalAction::Save);
                         }
-                        if modal_btn(ui, "Discard", None, ModalBtnKind::Default).clicked() {
+                        if ui::Button::new(ui::Kind::Secondary, "Discard")
+                            .icon(None)
+                            .show(ui)
+                            .clicked()
+                        {
                             action = Some(ModalAction::Discard);
                         }
-                        if modal_btn(ui, "Cancel", None, ModalBtnKind::Default).clicked() {
+                        if ui::Button::new(ui::Kind::Secondary, "Cancel")
+                            .icon(None)
+                            .show(ui)
+                            .clicked()
+                        {
                             action = Some(ModalAction::Dismiss);
                         }
                     });
@@ -2496,28 +2355,28 @@ fn draw_modal(
                     let filename = path.file_name().unwrap_or_default().to_string_lossy();
                     ui.label(
                         egui::RichText::new("Delete image?")
-                            .color(TEXT)
-                            .size(16.0)
-                            .strong(),
+                            .color(TEXT_1)
+                            .font(ui::title_font(ui::TITLE)),
                     );
                     ui.add_space(8.0);
                     ui.label(
                         egui::RichText::new(format!("Move\n\n{filename}\n\nto the Recycle Bin?"))
-                            .color(DIM)
+                            .color(TEXT_2)
                             .size(13.0),
                     );
                     btn_row(ui, &mut |ui| {
-                        if modal_btn(
-                            ui,
-                            "Delete",
-                            icons.map(|ic| &ic.reset),
-                            ModalBtnKind::Danger,
-                        )
-                        .clicked()
+                        if ui::Button::new(ui::Kind::Danger, "Delete")
+                            .icon(icons.map(|ic| &ic.reset))
+                            .show(ui)
+                            .clicked()
                         {
                             action = Some(ModalAction::Delete);
                         }
-                        if modal_btn(ui, "Cancel", None, ModalBtnKind::Default).clicked() {
+                        if ui::Button::new(ui::Kind::Secondary, "Cancel")
+                            .icon(None)
+                            .show(ui)
+                            .clicked()
+                        {
                             action = Some(ModalAction::Dismiss);
                         }
                     });
@@ -2530,9 +2389,8 @@ fn draw_modal(
                 } => {
                     ui.label(
                         egui::RichText::new("Wrong file extension")
-                            .color(TEXT)
-                            .size(16.0)
-                            .strong(),
+                            .color(TEXT_1)
+                            .font(ui::title_font(ui::TITLE)),
                     );
                     ui.add_space(8.0);
                     ui.label(
@@ -2540,21 +2398,22 @@ fn draw_modal(
                             "This file is a .{new_ext} saved as .{old_ext}.\n\nRename to: {}",
                             new_path.file_name().unwrap_or_default().to_string_lossy()
                         ))
-                        .color(DIM)
+                        .color(TEXT_2)
                         .size(13.0),
                     );
                     btn_row(ui, &mut |ui| {
-                        if modal_btn(
-                            ui,
-                            "Rename",
-                            icons.map(|ic| &ic.save),
-                            ModalBtnKind::Primary,
-                        )
-                        .clicked()
+                        if ui::Button::new(ui::Kind::Primary, "Rename")
+                            .icon(icons.map(|ic| &ic.save))
+                            .show(ui)
+                            .clicked()
                         {
                             action = Some(ModalAction::Rename);
                         }
-                        if modal_btn(ui, "Keep", None, ModalBtnKind::Default).clicked() {
+                        if ui::Button::new(ui::Kind::Secondary, "Keep")
+                            .icon(None)
+                            .show(ui)
+                            .clicked()
+                        {
                             action = Some(ModalAction::Dismiss);
                         }
                     });
@@ -2563,13 +2422,20 @@ fn draw_modal(
                     ui.label(
                         egui::RichText::new("Error")
                             .color(DANGER)
-                            .size(16.0)
-                            .strong(),
+                            .font(ui::title_font(ui::TITLE)),
                     );
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new(message.as_str()).color(TEXT).size(13.0));
+                    ui.label(
+                        egui::RichText::new(message.as_str())
+                            .color(TEXT_1)
+                            .size(13.0),
+                    );
                     btn_row(ui, &mut |ui| {
-                        if modal_btn(ui, "OK", None, ModalBtnKind::Default).clicked() {
+                        if ui::Button::new(ui::Kind::Secondary, "OK")
+                            .icon(None)
+                            .show(ui)
+                            .clicked()
+                        {
                             action = Some(ModalAction::Dismiss);
                         }
                     });
@@ -2811,16 +2677,6 @@ fn is_jpeg_path(path: &Path) -> bool {
     )
 }
 
-fn install_fonts(ctx: &egui::Context) {
-    // To bundle Inter: place InterVariable.ttf at src/assets/fonts/ and uncomment:
-    // let mut fonts = egui::FontDefinitions::default();
-    // fonts.font_data.insert("Inter".to_owned(),
-    //     egui::FontData::from_static(include_bytes!("assets/fonts/InterVariable.ttf")));
-    // fonts.families.entry(egui::FontFamily::Proportional).or_default().insert(0, "Inter".to_owned());
-    // ctx.set_fonts(fonts);
-    let _ = ctx;
-}
-
 fn load_icon() -> egui::IconData {
     // To embed the window icon, place a 256×256 RGBA PNG at src/assets/icon.png
     // and replace this with:
@@ -2884,6 +2740,11 @@ fn main() {
             .with_min_inner_size(egui::vec2(MIN_WINDOW.0, MIN_WINDOW.1))
             .with_app_id(APP_NAME)
             .with_icon(load_icon()),
+        // Patina's palette is dark only; following a light OS theme gave
+        // egui's own widgets (text fields, checkboxes) light defaults inside
+        // dark dialogs.
+        follow_system_theme: false,
+        default_theme: eframe::Theme::Dark,
         renderer: eframe::Renderer::Wgpu,
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
             present_mode: eframe::wgpu::PresentMode::AutoVsync,
@@ -2897,7 +2758,7 @@ fn main() {
         APP_NAME,
         options,
         Box::new(move |cc| {
-            install_fonts(&cc.egui_ctx);
+            ui::install_fonts(&cc.egui_ctx);
             egui_extras::install_image_loaders(&cc.egui_ctx);
             Box::new(app) as Box<dyn eframe::App>
         }),
@@ -2977,7 +2838,9 @@ mod keyboard_tests {
         app.navigator.set_current(path.to_path_buf());
         app.current_path = Some(path.to_path_buf());
         app.current_image = Some(img);
-        (app, egui::Context::default())
+        let ctx = egui::Context::default();
+        ui::install_fonts(&ctx); // as the app does at start-up
+        (app, ctx)
     }
 
     /// Open the editor and make an unsaved edit.
@@ -3520,6 +3383,65 @@ mod keyboard_tests {
 
         frame(&mut app, &ctx, vec![press(Key::Tab, Modifiers::NONE)]);
         assert_eq!(app.guides, Guides::Off);
+    }
+
+    /// Whether this frame paints anything filled with the accent, which in
+    /// the editor is only the primary button.
+    fn paints_accent_fill(app: &mut App, ctx: &egui::Context) -> bool {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let out = ctx.run(raw, |ctx| app.draw_ui(ctx));
+        out.shapes
+            .iter()
+            .any(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.fill == ui::tok::ACCENT))
+    }
+
+    #[test]
+    fn save_is_the_primary_button_only_with_unsaved_edits() {
+        let dir = TempDir::new("primary");
+        let (mut app, ctx) = app_on(&dir.jpeg("photo.jpg"));
+        app.enter_editor(&ctx);
+        app.thumb_cache = Some(ThumbCache::new());
+        paints_accent_fill(&mut app, &ctx); // first frame lays out the panel
+
+        assert!(
+            !paints_accent_fill(&mut app, &ctx),
+            "untouched: no green Save"
+        );
+        let p = EditParams {
+            exposure: 0.5,
+            ..EditParams::default()
+        };
+        app.editor_state.as_mut().unwrap().commit(p);
+        assert!(
+            paints_accent_fill(&mut app, &ctx),
+            "edited: Save is primary"
+        );
+    }
+
+    /// Tab reaches the dialog's buttons now that it is not a shortcut. Enter
+    /// on a focused Cancel must cancel, not take the first button (Delete).
+    #[test]
+    fn enter_on_a_focused_cancel_cancels_the_delete() {
+        let dir = TempDir::new("focus");
+        let path = dir.jpeg("a.jpg");
+        let (mut app, ctx) = app_on(&path);
+        frame(&mut app, &ctx, vec![press(Key::Delete, Modifiers::NONE)]);
+        assert!(matches!(app.modal, Some(ModalDialog::ConfirmDelete { .. })));
+
+        frame(&mut app, &ctx, vec![press(Key::Tab, Modifiers::NONE)]); // Delete
+        frame(&mut app, &ctx, vec![press(Key::Tab, Modifiers::NONE)]); // Cancel
+        frame(&mut app, &ctx, vec![press(Key::Enter, Modifiers::NONE)]);
+        frame(&mut app, &ctx, vec![]);
+
+        assert!(app.modal.is_none(), "{:?}", app.modal);
+        assert_eq!(app.pending_delete, None, "nothing was deleted");
+        assert!(path.exists());
     }
 
     /// The rating and label keys go through the keymap now; what they write

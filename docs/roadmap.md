@@ -24,26 +24,7 @@ tiles. The viewer keeps its zero-chrome canvas. The editor rail is reorganised a
    elegant way in than a file path, e.g. *Help → Open log folder*, or a *Copy log* button on the error dialog.
 3. ~~**Windows-app basics.**~~ Done — the title follows navigation (`● IMG_0412.jpg — 12 / 129 — Patina`), one
    keymap table (`src/keymap.rs`) drives the handler and the help, Tab is egui's, G cycles Off → Thirds → Golden.
-4. **Theme foundation.** Pin egui's dark base theme instead of following the OS. One green-tinted token set in
-   `ui::tok` with every text colour at WCAG AA (today's faint grey `#5E5E63` is 2.6:1), checked by a test. One
-   button component instead of three; Save is primary only with unsaved edits. Three-step type scale in Inter
-   (bundled, *decided*), monospace numbers, icons rasterised at their drawn size.
-
-| Token | Hex | Use |
-|---|---|---|
-| CANVAS | `#0D0F0E` | behind the image; HUD and toast backing |
-| SURFACE_SUNKEN | `#141716` | text fields, slider tracks |
-| SURFACE | `#1A1D1C` | rail, dialogs |
-| RAISED | `#232826` | secondary buttons, chips |
-| RAISED_HOVER | `#2B312E` | hover fill |
-| BORDER | `#2A302D` | hairlines |
-| BORDER_STRONG | `#3B423F` | outlines, disabled glyphs |
-| TEXT_1 / TEXT_2 / TEXT_3 | `#E6EAE8` / `#9AA39F` / `#8A938F` | 14.0 / 6.6 / 5.4 : 1 on SURFACE |
-| ACCENT (+ HOVER, PRESS) | `#9DBFB0` (`#B2D3C4`, `#87A99A`) | primary fill, modified dots, slider fill |
-| ACCENT_SOFT / ACCENT_LINE / ON_ACCENT | `#1F2E28` / `#4F6E61` / `#12201A` | selected fill, focus ring, text on accent |
-| DANGER (+ SOFT, LINE) | `#E0654A` (`#35221E`, `#5A3028`) | destructive actions, errors |
-| STAR | `#E2C062` | rating stars |
-| Labels | `#D7604F` `#D9B95A` `#6DB487` `#6A98CF` `#A178C8` | colour-label dots, ~15% desaturated |
+4. ~~**Theme foundation.**~~ Done — tokens, one button, Inter, pinned dark theme; see settled-decisions.md.
 
 ## The editor
 
