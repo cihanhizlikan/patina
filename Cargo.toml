@@ -47,6 +47,13 @@ kamadak-exif = "0.5"
 # ── Lossless JPEG transforms (rotate/flip without re-encoding) ────────────────
 mozjpeg = { version = "0.10", default-features = false, features = ["with_simd"] }
 
+# ── Lints ─────────────────────────────────────────────────────────────────────
+# The bans in clippy.toml are architecture rules, not style, so a
+# violation stops the build instead of joining a warning count.
+# See docs/settled-decisions.md.
+[lints.clippy]
+disallowed_methods = "deny"
+
 [build-dependencies]
 # winres kept for Windows icon embedding — platform-specific but harmless on others
 winres = "0.1"

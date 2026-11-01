@@ -1,0 +1,6 @@
+# Pinned so a clippy warning count means the same thing twice running:
+# a floating `stable` changes the lint set with every rustup update.
+# Raise it deliberately and read new warnings as a change, not a regression.
+[toolchain]
+channel    = "1.96.0"
+components = ["clippy", "rustfmt"]

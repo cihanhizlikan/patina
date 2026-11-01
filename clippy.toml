@@ -1,0 +1,7 @@
+# Architecture bans. Each one carries its reason; the full record is
+# docs/settled-decisions.md. `disallowed_methods` is raised to `deny`
+# in Cargo.toml's [lints.clippy] table.
+disallowed-methods = [
+    { path = "std::fs::canonicalize",       reason = "archiver-safe paths: canonicalize adds a \\\\?\\ prefix that breaks paths handed over by archivers - see docs/settled-decisions.md" },
+    { path = "std::path::Path::canonicalize", reason = "archiver-safe paths: canonicalize adds a \\\\?\\ prefix that breaks paths handed over by archivers - see docs/settled-decisions.md" },
+]
