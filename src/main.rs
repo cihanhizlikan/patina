@@ -160,6 +160,10 @@ struct SaveAsModal {
     /// When set, the exported image is resized to fit within this square.
     max_dim:   Option<u32>,
     preset:    ExportPreset,
+    /// An existing file the dialog has warned about. Saving to exactly this
+    /// path replaces it; any change to the folder, name or format makes a
+    /// new target and asks again.
+    replace:   Option<PathBuf>,
 }
 
 /// Built-in export presets with format, quality, and optional max dimension.
@@ -281,6 +285,8 @@ struct App {
     pending_rename:           Option<(PathBuf, String)>,
     pending_delete:           Option<PathBuf>,
     pending_save_and_exit:    Option<bool>,
+    /// Discard was chosen in a "Save changes?" that a quit opened.
+    pending_close:            bool,
     show_help:                bool,
 }
 
@@ -329,6 +335,7 @@ impl App {
             pending_error:            None,
             pending_rename:           None,
             pending_delete:           None,
+            pending_close:            false,
             pending_save_and_exit:    None,
             show_help:                false,
         }
@@ -779,7 +786,7 @@ impl App {
         let format    = path.map(OutputFormat::from_path).unwrap_or(OutputFormat::Png);
         let directory = path.and_then(|p| p.parent())
             .unwrap_or(Path::new(".")).to_path_buf();
-        SaveAsModal { stem, format, directory, quality: 95, max_dim: None, preset: ExportPreset::Custom }
+        SaveAsModal { stem, format, directory, quality: 95, max_dim: None, preset: ExportPreset::Custom, replace: None }
     }
 
     fn commit_save_as(&mut self, ctx: &egui::Context, dest: PathBuf,
@@ -845,6 +852,7 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.apply_deferred_viewport(ctx, frame);
+        self.guard_close(ctx);
         self.process_background_messages(ctx);
         self.tick_and_schedule_animation(ctx);
         self.drive_async_edit(ctx);
@@ -883,6 +891,21 @@ impl App {
         }
         if let Some(path) = self.pending_delete.take() {
             self.execute_delete(path, ctx);
+        }
+        if std::mem::take(&mut self.pending_close) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// The window's close button, Alt+F4 and every other close ask first when
+    /// there are unsaved edits, as Q does: they closed and dropped the edits.
+    fn guard_close(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|i| i.viewport().close_requested()) || !self.editor_params_changed() { return; }
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        // An open dialog is answered first; the next close asks again.
+        if self.modal.is_none() {
+            self.save_as_modal = None;
+            self.modal = Some(ModalDialog::SaveOnExit { save_and_quit: true });
         }
     }
 
@@ -1593,7 +1616,7 @@ fn modal_btn(
 
 fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
     let Some(ref mut modal) = app.save_as_modal else { return };
-    use ui::{BG, BORDER, DIM, TEXT};
+    use ui::{BG, BORDER, DANGER, DIM, TEXT};
 
     // Dim at Background so the Window (Middle) is always above it.
     ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("saveas_dim")))
@@ -1716,11 +1739,19 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
 
             ui.label(egui::RichText::new(
                 format!("→ {}", modal.full_path().display())).color(DIM).size(11.0));
+            let replacing = modal.replace.as_ref() == Some(&modal.full_path());
+            if replacing {
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(format!(
+                    "{} already exists. Replace it?", modal.full_filename())).color(DANGER).size(12.0));
+            }
             ui.add_space(16.0);
 
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                if modal_btn(ui, "Save",   None, ModalBtnKind::Primary).clicked() { confirm = true; }
+                let (label, kind) = if replacing { ("Replace", ModalBtnKind::Danger) }
+                                    else         { ("Save",    ModalBtnKind::Primary) };
+                if modal_btn(ui, label,    None, kind).clicked()                  { confirm = true; }
                 if modal_btn(ui, "Cancel", None, ModalBtnKind::Default).clicked() { cancel  = true; }
             });
         });
@@ -1738,12 +1769,22 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
     // Esc closes Save As; the editor's own Esc stands down while it is open.
     if ctx.input_mut(|i| consume_shortcut(i, egui::Modifiers::NONE, egui::Key::Escape)) { cancel = true; }
     if cancel  { app.save_as_modal = None; }
-    if confirm {
-        if let Some(m) = app.save_as_modal.take() {
-            let (q, d) = (m.quality, m.max_dim);
-            app.commit_save_as(ctx, m.full_path(), q, d);
-        }
+    if confirm { confirm_save_as(app, ctx); }
+}
+
+/// Save As's Save button or Enter. A file already at the target is replaced
+/// only on a second confirm of the same path, after the dialog has said so;
+/// before, it was replaced without a word.
+fn confirm_save_as(app: &mut App, ctx: &egui::Context) {
+    let Some(m) = &mut app.save_as_modal else { return };
+    let dest = m.full_path();
+    if dest.exists() && m.replace.as_ref() != Some(&dest) {
+        m.replace = Some(dest);
+        return;
     }
+    let (q, d) = (m.quality, m.max_dim);
+    app.save_as_modal = None;
+    app.commit_save_as(ctx, dest, q, d);
 }
 
 /// Paint a format selector pill button (active = spruce accent, inactive = dark with hover).
@@ -1899,7 +1940,14 @@ fn apply_modal_action(app: &mut App, action: ModalAction) {
                 app.pending_save_and_exit = Some(*save_and_quit);
             }
         }
-        ModalAction::Discard => { app.do_exit_editor(); }
+        ModalAction::Discard => {
+            // Discarding on the way out still goes out; before, Q and Discard
+            // only left the editor.
+            if let Some(ModalDialog::SaveOnExit { save_and_quit: true }) = &app.modal {
+                app.pending_close = true;
+            }
+            app.do_exit_editor();
+        }
         ModalAction::Delete  => {
             if let Some(ModalDialog::ConfirmDelete { path }) = &app.modal {
                 app.pending_delete = Some(path.clone());
@@ -1908,9 +1956,12 @@ fn apply_modal_action(app: &mut App, action: ModalAction) {
         ModalAction::Rename  => {
             if let Some(ModalDialog::OfferRename { old_path, new_path, .. }) = &app.modal {
                 let (old, new) = (old_path.clone(), new_path.clone());
-                if std::fs::rename(&old, &new).is_ok() {
-                    app.navigator.rename(&old, new.clone());
-                    app.current_path = Some(new);
+                match rename_no_replace(&old, &new) {
+                    Ok(()) => {
+                        app.navigator.rename(&old, new.clone());
+                        app.current_path = Some(new);
+                    }
+                    Err(e) => app.pending_error = Some(format!("Could not rename {}:\n{e}", old.display())),
                 }
             }
         }
@@ -1984,6 +2035,19 @@ fn offer_rename_if_writable(path: &Path, correct_ext: &str) -> Option<PathBuf> {
     // Probe writability by opening for write (no truncate). Best cross-platform approach.
     std::fs::OpenOptions::new().write(true).open(path).ok()?;
     Some(unique_rename_target(path, correct_ext))
+}
+
+/// Rename `from` to `to` unless `to` exists. `std::fs::rename` replaces an
+/// existing `to` on Windows, and the offered name, unused when the dialog
+/// opened, may have been taken by the time Rename is clicked. The check and
+/// the rename are still two calls; std's only atomic no-replace is a hard
+/// link, which exFAT memory cards do not have.
+fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    if to.try_exists()? {
+        return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists,
+            format!("{} already exists", to.display())));
+    }
+    std::fs::rename(from, to)
 }
 
 fn unique_rename_target(path: &Path, new_ext: &str) -> PathBuf {
@@ -2168,7 +2232,8 @@ mod keyboard_tests {
     fn app_on(path: &Path) -> (App, egui::Context) {
         let (tx, rx) = crossbeam_channel::unbounded();
         let mut app = App::new(tx, rx);
-        let LoadOutcome::Ok(img) = load_image(path) else { panic!("{} did not load", path.display()) };
+        let (LoadOutcome::Ok(img) | LoadOutcome::WrongExtension(img, _)) = load_image(path)
+            else { panic!("{} did not load", path.display()) };
         app.navigator.set_current(path.to_path_buf());
         app.current_path  = Some(path.to_path_buf());
         app.current_image = Some(img);
@@ -2187,19 +2252,31 @@ mod keyboard_tests {
         egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
     }
 
-    /// One frame with `events`; returns whether it asked the window to close.
-    fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) -> bool {
-        let raw = egui::RawInput {
+    /// One frame with `events`, and with the window's close button pressed
+    /// when `close` is set; returns the window commands the app sent.
+    fn run(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>, close: bool) -> Vec<egui::ViewportCommand> {
+        let mut raw = egui::RawInput {
             events,
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))),
             ..Default::default()
         };
+        if close {
+            raw.viewports.insert(egui::ViewportId::ROOT, egui::ViewportInfo {
+                events: vec![egui::ViewportEvent::Close], ..Default::default()
+            });
+        }
         let out = ctx.run(raw, |ctx| {
             app.apply_pending_actions(ctx);
+            app.guard_close(ctx);
             app.draw_ui(ctx);
             app.process_keyboard(ctx);
         });
-        out.viewport_output.values().any(|v| v.commands.contains(&egui::ViewportCommand::Close))
+        out.viewport_output.into_values().flat_map(|v| v.commands).collect()
+    }
+
+    /// One frame with `events`; returns whether it asked the window to close.
+    fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) -> bool {
+        run(app, ctx, events, false).contains(&egui::ViewportCommand::Close)
     }
 
     const CTRL:       Modifiers = Modifiers::COMMAND;
@@ -2365,5 +2442,141 @@ mod keyboard_tests {
 
         assert!(closed);
         assert_ne!(std::fs::read(&path).unwrap(), before);
+    }
+
+    // ── Closing the window ────────────────────────────────────────────────────
+
+    #[test]
+    fn closing_the_window_with_unsaved_edits_asks_first() {
+        let dir  = TempDir::new("close");
+        let path = dir.jpeg("photo.jpg");
+        let before = std::fs::read(&path).unwrap();
+        let (mut app, ctx) = app_on(&path);
+        edit(&mut app, &ctx);
+
+        let cmds = run(&mut app, &ctx, vec![], true);
+
+        assert!(cmds.contains(&egui::ViewportCommand::CancelClose), "{cmds:?}");
+        assert!(matches!(app.modal, Some(ModalDialog::SaveOnExit { save_and_quit: true })), "{:?}", app.modal);
+        // Esc: stay, with the edits.
+        assert!(!frame(&mut app, &ctx, vec![press(Key::Escape, Modifiers::NONE)]));
+        assert!(app.in_editor() && app.editor_params_changed());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn discard_on_close_closes_without_writing() {
+        let dir  = TempDir::new("discard");
+        let path = dir.jpeg("photo.jpg");
+        let before = std::fs::read(&path).unwrap();
+        let (mut app, ctx) = app_on(&path);
+        edit(&mut app, &ctx);
+        run(&mut app, &ctx, vec![], true);
+
+        apply_modal_action(&mut app, ModalAction::Discard); // the Discard button
+        app.modal = None;
+        assert!(frame(&mut app, &ctx, vec![]), "Discard went on to close");
+        // The close that follows is no longer stopped.
+        assert!(!run(&mut app, &ctx, vec![], true).contains(&egui::ViewportCommand::CancelClose));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn closing_with_nothing_unsaved_just_closes() {
+        let dir = TempDir::new("closeclean");
+        let (mut app, ctx) = app_on(&dir.jpeg("photo.jpg"));
+        app.enter_editor(&ctx);
+
+        let cmds = run(&mut app, &ctx, vec![], true);
+
+        assert!(!cmds.contains(&egui::ViewportCommand::CancelClose), "{cmds:?}");
+        assert!(app.modal.is_none());
+    }
+
+    // ── Save As onto an existing file ─────────────────────────────────────────
+
+    #[test]
+    fn save_as_asks_before_replacing_a_file() {
+        let dir   = TempDir::new("replace");
+        let open  = dir.jpeg("a.jpg");
+        let other = dir.0.join("b.jpg");
+        std::fs::write(&other, b"someone else's photo").unwrap();
+        let (mut app, ctx) = app_on(&open);
+        edit(&mut app, &ctx);
+        app.save_as_returning(&ctx);
+        app.save_as_modal.as_mut().unwrap().stem = "b".into();
+
+        confirm_save_as(&mut app, &ctx);
+
+        assert_eq!(std::fs::read(&other).unwrap(), b"someone else's photo", "not replaced on the first Save");
+        assert_eq!(app.save_as_modal.as_ref().and_then(|m| m.replace.clone()), Some(other.clone()));
+        frame(&mut app, &ctx, vec![]); // draws the warning and the Replace button
+
+        // A different name is a new target: saved at once, b.jpg untouched.
+        app.save_as_modal.as_mut().unwrap().stem = "c".into();
+        confirm_save_as(&mut app, &ctx);
+        assert!(app.save_as_modal.is_none());
+        assert!(dir.0.join("c.jpg").exists());
+        assert_eq!(std::fs::read(&other).unwrap(), b"someone else's photo");
+    }
+
+    #[test]
+    fn save_as_replaces_after_the_second_confirm() {
+        let dir   = TempDir::new("replace2");
+        let open  = dir.jpeg("a.jpg");
+        let other = dir.0.join("b.jpg");
+        std::fs::write(&other, b"someone else's photo").unwrap();
+        let (mut app, ctx) = app_on(&open);
+        edit(&mut app, &ctx);
+        app.save_as_returning(&ctx);
+        app.save_as_modal.as_mut().unwrap().stem = "b".into();
+
+        confirm_save_as(&mut app, &ctx);
+        confirm_save_as(&mut app, &ctx);
+
+        assert!(app.save_as_modal.is_none());
+        assert!(matches!(load_image(&other), LoadOutcome::Ok(_)), "b.jpg is now the edited image");
+    }
+
+    // ── Wrong-extension rename ────────────────────────────────────────────────
+
+    /// The offered name was free when the dialog opened, then a file took it.
+    #[test]
+    fn rename_never_replaces_a_file_that_appeared() {
+        let dir = TempDir::new("rename");
+        let old = dir.0.join("photo.jpg");
+        image::RgbImage::from_pixel(4, 4, image::Rgb([1, 2, 3])).save_with_format(&old, image::ImageFormat::Png).unwrap();
+        let new = dir.0.join("photo.png");
+        let (mut app, ctx) = app_on(&old);
+        app.modal = Some(ModalDialog::OfferRename {
+            old_path: old.clone(), new_path: new.clone(), old_ext: "jpg".into(), new_ext: "png".into(),
+        });
+        std::fs::write(&new, b"arrived since").unwrap();
+
+        frame(&mut app, &ctx, vec![press(Key::Enter, Modifiers::NONE)]);
+
+        assert_eq!(std::fs::read(&new).unwrap(), b"arrived since");
+        assert!(old.exists(), "the original keeps its name");
+        assert_eq!(app.current_path.as_ref(), Some(&old));
+        frame(&mut app, &ctx, vec![]);
+        assert!(matches!(&app.modal, Some(ModalDialog::Error { message }) if message.contains("already exists")),
+                "{:?}", app.modal);
+    }
+
+    #[test]
+    fn rename_to_a_free_name_renames() {
+        let dir = TempDir::new("rename-ok");
+        let old = dir.0.join("photo.jpg");
+        image::RgbImage::from_pixel(4, 4, image::Rgb([1, 2, 3])).save_with_format(&old, image::ImageFormat::Png).unwrap();
+        let new = dir.0.join("photo.png");
+        let (mut app, ctx) = app_on(&old);
+        app.modal = Some(ModalDialog::OfferRename {
+            old_path: old.clone(), new_path: new.clone(), old_ext: "jpg".into(), new_ext: "png".into(),
+        });
+
+        frame(&mut app, &ctx, vec![press(Key::Enter, Modifiers::NONE)]);
+
+        assert!(!old.exists() && new.exists());
+        assert_eq!(app.current_path.as_ref(), Some(&new));
     }
 }

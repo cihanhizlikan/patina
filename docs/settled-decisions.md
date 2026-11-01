@@ -72,6 +72,16 @@ and the arrow keys moved the view under an open delete dialog. **The delete dial
 save-and-quit closes only when the save succeeded. `keyboard_tests` in `src/main.rs` drive real key events through
 an egui context and check the files on disk; each fails with its fix reverted.
 
+## Nothing is replaced or dropped without asking (2026-11-01)
+Three paths did it silently. **Closing the window** (close button, Alt+F4) with unsaved edits now cancels the
+close and asks *Save changes?*, like Q; Discard on that question closes, where it used to only leave the editor.
+**Save As onto an existing file** shows *"b.jpg already exists. Replace it?"* and a Replace button; only a second
+confirm of the same path replaces it, and changing the folder, name or format asks again. **The wrong-extension
+rename** refuses a target that exists (`rename_no_replace`), because `std::fs::rename` replaces on Windows and the
+offered name, free when the dialog opened, can be taken before Rename is clicked; a failed rename now reaches a
+dialog instead of being dropped. The rename's check-then-rename leaves a gap of two system calls: std's only atomic
+no-replace is a hard link, which exFAT memory cards lack.
+
 ## Ratings and colour labels live in XMP sidecars
 Not written into the image file: `<image>.xmp` next to it, holding `xmp:Rating` (0–5) and `xmp:Label`
 (`src/xmp.rs`).
