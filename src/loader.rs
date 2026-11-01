@@ -236,7 +236,8 @@ fn read_magic(path: &Path) -> Result<Option<image::ImageFormat>, BoxError> {
 // ── Decoders ──────────────────────────────────────────────────────────────────
 
 fn decode_raster(path: &Path, strategy: DecodeStrategy) -> Result<DecodedImage, BoxError> {
-    let img = match strategy {
+    use image::ImageDecoder;
+    let reader = match strategy {
         DecodeStrategy::ByExtension => {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             let declared = image::ImageFormat::from_extension(ext)
@@ -245,14 +246,19 @@ fn decode_raster(path: &Path, strategy: DecodeStrategy) -> Result<DecodedImage, 
             if actual != Some(declared) {
                 return Err(format!("magic bytes do not match extension .{ext}").into());
             }
-            image::open(path)?
+            image::ImageReader::open(path)?
         }
         DecodeStrategy::ByContent => {
             let file = std::fs::File::open(path)?;
-            image::ImageReader::new(std::io::BufReader::new(file))
-                .with_guessed_format()?.decode()?
+            image::ImageReader::new(std::io::BufReader::new(file)).with_guessed_format()?
         }
     };
+    // Show the image the way it was shot: the EXIF Orientation tag says how
+    // the stored pixels must be turned, and Patina saves rotations there.
+    let mut decoder = reader.into_decoder()?;
+    let orientation = decoder.orientation()?;
+    let mut img     = image::DynamicImage::from_decoder(decoder)?;
+    img.apply_orientation(orientation);
     let rgba   = img.into_rgba8();
     let (w, h) = rgba.dimensions();
     Ok(DecodedImage::single(rgba.into_raw(), w, h))

@@ -174,7 +174,7 @@ pub fn write_labels(image_path: &Path, labels: &ImageLabels) -> std::io::Result<
 
     match existing {
         None if labels.is_empty() => Ok(()),
-        None => write_atomic(&xmp_path, &build_xmp_packet(labels.rating, labels.colour.xmp_name())),
+        None => write_atomic(&xmp_path, build_xmp_packet(labels.rating, labels.colour.xmp_name())),
         Some(text) if labels.is_empty() && is_own_packet(&text) => std::fs::remove_file(&xmp_path),
         Some(text) => write_atomic(&xmp_path, &set_labels(&text, labels)?),
     }
@@ -209,9 +209,13 @@ fn set_value(text: &str, tag: &str, value: &str, is_default: bool) -> std::io::R
     Ok(out)
 }
 
-/// Write to a temporary file beside `path`, then rename it over `path`.
-fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
-    let tmp = path.with_extension("xmp.tmp");
+/// Write to a temporary file beside `path`, then rename it over `path`, so a
+/// crash leaves either the old file or the new one, never half of one.
+/// Also used for JPEG orientation saves (`orientation.rs`).
+pub(crate) fn write_atomic(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
     std::fs::write(&tmp, contents)?;
     std::fs::rename(&tmp, path).inspect_err(|_| { let _ = std::fs::remove_file(&tmp); })
 }

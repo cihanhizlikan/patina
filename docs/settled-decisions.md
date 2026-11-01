@@ -25,6 +25,20 @@ value, so undo is a `Vec<EditParams>` with no pixel copies. The operation order 
 then colour, then preset style, then sharpening (`src/editor.rs` module doc). Animated GIFs get the same parameters
 on every frame.
 
+## Images are shown by their EXIF orientation (2026-11-01)
+`decode_raster` applies the Orientation tag, as cameras, browsers, Explorer and Lightroom do. Before, a portrait
+phone photo (stored landscape with Orientation 6) opened sideways.
+
+## A JPEG rotation is saved as its EXIF orientation, not re-encoded (2026-11-01)
+A save whose only edits are rotate and flip changes the Orientation tag and nothing else (`src/orientation.rs`).
+It replaced a decode → rotate → re-encode at quality 95 that was logged as *"lossless"* yet lost quality on every
+save and dropped the whole EXIF block. **Why not a real lossless DCT transform** (what `jpegtran` does): the
+`mozjpeg` crate's safe API exposes no coefficients, and every crate that does is FFI to libjpeg, which needs
+`unsafe` or a C toolchain beyond the one we have; the tag gets the same picture with zero change to the image
+data. **The trade-off**: software that ignores EXIF orientation shows the old orientation. Everything current
+honours it. The new value is found by trying the eight orientations against `editor::apply_rotation_flip_raw`,
+so there is one definition of rotation direction, not a second table to keep in step. `mozjpeg` was dropped.
+
 ## Ratings and colour labels live in XMP sidecars
 Not written into the image file: `<image>.xmp` next to it, holding `xmp:Rating` (0–5) and `xmp:Label`
 (`src/xmp.rs`).
@@ -74,11 +88,18 @@ Patina uses the full-filename form, as darktable does. Lightroom and Capture One
 Patina sets on a RAW are invisible to them, and theirs to Patina. Recommendation: read both, write to whichever
 exists, and create `photo.jpg.xmp` only when neither does.
 
-## "Lossless" JPEG save is a re-encode at quality 95
-`lossless_jpeg_transform` decodes, rotates the pixels and re-encodes at a fixed quality 95, overwriting the file in
-place. Its own comment admits this; the log line still says *"lossless JPEG transform applied"*. It also drops the
-EXIF block (camera, date, GPS, orientation). Recommendation: either a real DCT-domain transform or an honest
-name, and carry the metadata across either way.
+## Saving re-encoded pixels drops all metadata
+Any save that is not a pure JPEG rotation goes through `save_image_to_path_opts`, which writes pixels only: EXIF
+(camera, date, GPS), ICC profile and XMP are lost. Orientation stays correct, because the pixels written are
+already turned. Recommendation: carry EXIF and ICC across, with Orientation reset to 1.
+
+## WebP "quality" is ignored
+The `image` crate's WebP encoder is lossless only, so the *Archive (WebP 90%)* preset writes lossless WebP and the
+quality field does nothing (the code says so; the UI does not).
+
+## Window size and RAW files ignore orientation
+`image_size_hint` sizes the first window from the stored dimensions, so a portrait phone photo opens in a
+landscape window. RAW files go through `rawler`, whose orientation Patina does not apply.
 
 ## Delete is permanent
 `execute_delete` calls `std::fs::remove_file`: no Recycle Bin, no undo, and errors are discarded. Devoid Viewer

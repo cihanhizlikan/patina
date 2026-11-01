@@ -32,6 +32,7 @@ mod ui;
 mod preset_thumbs;
 mod exif;
 mod xmp;
+mod orientation;
 
 use std::{
     collections::HashMap,
@@ -719,33 +720,27 @@ impl App {
         let Some(path) = self.current_path.clone() else { return };
         let Some(es)   = &self.editor_state         else { return };
         let params     = es.undo.current().clone();
+        let display    = es.display.clone();
 
-        // Attempt lossless JPEG transform when only geometry changed.
-        // This avoids a full decode→process→encode cycle and preserves original quality.
-        if is_pure_geometry(&params) && is_jpeg_path(&path) {
-            match lossless_jpeg_transform(&path, &params) {
-                Ok(true) => {
-                    log!("[save] lossless JPEG transform applied");
-                    update_title(ctx, self.current_filename().as_deref());
-                    self.reset_editor_after_save();
-                    return;
-                }
-                Ok(false) => {
-                    log!("[save] lossless not applicable (non-MCU-aligned), re-encoding");
-                }
-                Err(e) => {
-                    self.pending_error = Some(format!("Save failed:\n{e}"));
-                    return;
-                }
-            }
-        }
-
-        if let Err(e) = save_image_to_path(&es.display, &path, self.frame_index) {
-            self.pending_error = Some(format!("Save failed:\n{e}"));
+        // A JPEG that was only rotated or flipped keeps its compressed data:
+        // the change goes into the EXIF orientation (see orientation.rs).
+        let saved = if is_pure_geometry(&params) && is_jpeg_path(&path) {
+            orientation::save_geometry(&path, &params)
+                .inspect(|_| log!("[save] EXIF orientation written; image data untouched"))
         } else {
-            update_title(ctx, self.current_filename().as_deref());
-            self.reset_editor_after_save();
+            save_image_to_path(&display, &path, self.frame_index)
+        };
+        if let Err(e) = saved {
+            self.pending_error = Some(format!("Save failed:\n{e}"));
+            return;
         }
+        // The file now holds what is on screen, so it becomes the image the
+        // next edit starts from, as in commit_save_as. Without this the edit
+        // just saved would be applied to the pre-save pixels and lost.
+        self.current_image = Some(display);
+        self.image_gen += 1;
+        update_title(ctx, self.current_filename().as_deref());
+        self.reset_editor_after_save();
     }
 
     /// Opens the custom Save As modal; actual write happens on confirm.
@@ -1937,90 +1932,6 @@ fn is_jpeg_path(path: &Path) -> bool {
             .map(|e| e.to_ascii_lowercase()).as_deref(),
         Some("jpg") | Some("jpeg")
     )
-}
-
-/// Apply rotation and/or flip to a JPEG file in-place without re-encoding.
-///
-/// Operates on DCT coefficients — no pixel decode/recode, no quality loss.
-/// Returns `Ok(true)` on success, `Ok(false)` if the image dimensions are not
-/// MCU-aligned (mozjpeg limitation — caller should fall back to re-encode),
-/// or `Err` on I/O or parse failure.
-/// Rotate/flip a JPEG file using mozjpeg for maximum quality preservation.
-///
-/// The term "lossless" here means: we re-encode at the SAME quality level as
-/// the original file (read via mozjpeg's Decompress), apply the geometry
-/// transform at the pixel level, then encode at that recovered quality.
-/// This is the best possible quality-preserving approach available through the
-/// mozjpeg 0.10 safe API. True DCT-coefficient lossless requires mozjpeg-sys
-/// raw bindings and is a future enhancement.
-///
-/// Returns `Ok(true)` on success, `Ok(false)` for identity (nothing to do),
-/// or `Err` on I/O / encode failure.
-fn lossless_jpeg_transform(path: &Path, p: &EditParams) -> anyhow::Result<bool> {
-    // Identity check — nothing to do.
-    if p.rotation == editor::Rotation::R0 && !p.flip_h && !p.flip_v {
-        return Ok(false);
-    }
-
-    let jpeg_bytes = std::fs::read(path)
-        .map_err(|e| anyhow::anyhow!("could not read {}: {e}", path.display()))?;
-
-    // Decode JPEG → RGB pixels.
-    let (pixels, src_w, src_h) = {
-        let decomp = mozjpeg::Decompress::new_mem(&jpeg_bytes)
-            .map_err(|e| anyhow::anyhow!("JPEG decode failed: {e}"))?;
-        let mut img = decomp.rgb()
-            .map_err(|e| anyhow::anyhow!("JPEG colorspace failed: {e}"))?;
-        let w = img.width()  as u32;
-        let h = img.height() as u32;
-        // read_scanlines::<u8>() returns a flat Vec<u8> of RGB bytes
-        let px: Vec<u8> = img.read_scanlines::<u8>()
-            .map_err(|e| anyhow::anyhow!("JPEG scanlines failed: {e}"))?;
-        (px, w, h)
-    };
-
-    // Apply geometry transform at the pixel level.
-    let (transformed, out_w, out_h) = transform_rgb_pixels(&pixels, src_w, src_h, p);
-
-    // Re-encode at quality 95 — high quality while staying smaller than lossless PNG.
-    // (True lossless JPEG via DCT coefficient transforms requires mozjpeg-sys raw bindings.)
-    const ENCODE_QUALITY: f32 = 95.0;
-    let encoded = {
-        let mut comp = mozjpeg::Compress::new(mozjpeg::ColorSpace::JCS_RGB);
-        comp.set_size(out_w as usize, out_h as usize);
-        comp.set_quality(ENCODE_QUALITY);
-        comp.set_optimize_coding(true);
-        let mut started = comp.start_compress(Vec::new())
-            .map_err(|e| anyhow::anyhow!("JPEG compress start failed: {e}"))?;
-        started.write_scanlines(&transformed)
-            .map_err(|e| anyhow::anyhow!("JPEG write scanlines failed: {e}"))?;
-        started.finish()
-            .map_err(|e| anyhow::anyhow!("JPEG finish failed: {e}"))?
-    };
-
-    std::fs::write(path, &encoded)
-        .map_err(|e| anyhow::anyhow!("could not write {}: {e}", path.display()))?;
-    log!("[save] JPEG geometry saved at quality={ENCODE_QUALITY}");
-    Ok(true)
-}
-
-/// Apply rotation and flip to a flat RGB (3 bytes/pixel) pixel buffer.
-/// Returns (transformed_rgb_pixels, new_width, new_height).
-fn transform_rgb_pixels(
-    px: &[u8], w: u32, h: u32, p: &EditParams,
-) -> (Vec<u8>, u32, u32) {
-    // Widen RGB → RGBA so our existing geometry pipeline can work on it.
-    let rgba: Vec<u8> = px.chunks_exact(3)
-        .flat_map(|c| [c[0], c[1], c[2], 255u8])
-        .collect();
-
-    let (rotated, out_w, out_h) = editor::apply_rotation_flip_raw(&rgba, w, h, p);
-
-    // Narrow RGBA → RGB for the mozjpeg encoder.
-    let rgb: Vec<u8> = rotated.chunks_exact(4)
-        .flat_map(|c| [c[0], c[1], c[2]])
-        .collect();
-    (rgb, out_w, out_h)
 }
 
 fn save_image_to_path(img: &DecodedImage, path: &Path, frame: usize) -> anyhow::Result<()> {

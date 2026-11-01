@@ -43,10 +43,6 @@ rawler = { version = "0.6", default-features = false }
 # ── EXIF/IPTC metadata ────────────────────────────────────────────────────────
 kamadak-exif = "0.5"
 
-
-# ── Lossless JPEG transforms (rotate/flip without re-encoding) ────────────────
-mozjpeg = { version = "0.10", default-features = false, features = ["with_simd"] }
-
 # ── Lints ─────────────────────────────────────────────────────────────────────
 # The bans in clippy.toml are architecture rules, not style, so a
 # violation stops the build instead of joining a warning count.

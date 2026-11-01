@@ -243,6 +243,8 @@ impl EditorState {
 
 /// Apply rotation and flip to a raw RGBA pixel buffer.
 /// Returns (transformed_pixels, new_width, new_height).
+/// The one definition of geometry: the pipeline uses it, and so does saving a
+/// JPEG rotation as an EXIF orientation (`orientation::compose`).
 pub fn apply_rotation_flip_raw(px: &[u8], w: u32, h: u32, p: &EditParams) -> (Vec<u8>, u32, u32) {
     let (px, w, h) = do_rotate(px, w, h, p.rotation);
     let (px, w, h) = do_flip(&px, w, h, p.flip_h, p.flip_v);
@@ -275,8 +277,7 @@ pub fn apply_edits(src: &DecodedImage, params: &EditParams) -> DecodedImage {
 
 fn process_frame(px: &[u8], w: u32, h: u32, p: &EditParams) -> (Vec<u8>, u32, u32) {
     // 1. Geometry
-    let (px, w, h) = do_rotate(px, w, h, p.rotation);
-    let (px, w, h) = do_flip(&px, w, h, p.flip_h, p.flip_v);
+    let (px, w, h) = apply_rotation_flip_raw(px, w, h, p);
     // 2. Scale
     let (px, w, h) = if (p.scale - 1.0).abs() > 1e-4 {
         scale_bilinear(&px, w, h, p.scale)

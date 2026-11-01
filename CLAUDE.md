@@ -12,6 +12,7 @@ loader, navigator and path rules.
 - `src/loader.rs` — decoding to straight RGBA8, magic-byte sniffing, wrong-extension recovery, RAW.
 - `src/nav.rs` — the sibling-file list for one directory, natural sort, wraparound navigation.
 - `src/exif.rs` — EXIF fields for the metadata panel. `src/xmp.rs` — rating and colour-label sidecars.
+- `src/orientation.rs` — saving a JPEG rotation or flip as its EXIF orientation, byte-exact otherwise.
 - `src/preset_thumbs.rs`, `src/assets/` — embedded SVGs. `patina_setup.iss` — Inno Setup installer.
 
 ## Critical rules
