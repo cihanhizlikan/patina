@@ -13,6 +13,9 @@
 //!      moves, so every offset in the block (sub-IFDs, MakerNotes) holds.
 //!   3. No EXIF — a minimal APP1 holding only the Orientation is inserted
 //!      after SOI and any APP0 (JFIF) segments.
+//!
+//! `for_upright_pixels` serves the other kind of save, which re-encodes
+//! pixels that are already turned (`save.rs`): it sets the tag back to 1.
 
 use std::ops::Range;
 use std::path::Path;
@@ -93,6 +96,24 @@ fn with_geometry(jpeg: &[u8], p: &EditParams) -> anyhow::Result<Vec<u8>> {
             Ok([&jpeg[..seg], &[0xFF, 0xE1], &len.to_be_bytes(), &body, &jpeg[app1.tiff.end..]].concat())
         }
     }
+}
+
+// ── Re-encoded saves ──────────────────────────────────────────────────────────
+
+/// Make an EXIF block (its TIFF bytes) true of pixels that are already
+/// turned upright, for a save that re-encodes them: Orientation becomes 1,
+/// or the saved image would be turned a second time, and IFD1 is cut off,
+/// because its thumbnail still shows the image before the edit. Every other
+/// byte stays, so offsets into the block hold.
+pub fn for_upright_pixels(exif: &mut [u8]) -> anyhow::Result<()> {
+    let t           = Tiff::parse(exif)?;
+    let orientation = t.orientation_value_at()?;
+    let next_at     = t.ifd0 + 2 + 12 * t.u16(t.ifd0)? as usize;
+    t.u32(next_at)?; // in bounds
+    let (one, none) = (t.encode_u16(1), t.encode_u32(0));
+    if let Some(at) = orientation { exif[at..at + 2].copy_from_slice(&one); }
+    exif[next_at..next_at + 4].copy_from_slice(&none);
+    Ok(())
 }
 
 // ── JPEG segments ─────────────────────────────────────────────────────────────

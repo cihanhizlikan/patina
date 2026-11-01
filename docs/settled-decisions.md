@@ -39,6 +39,19 @@ data. **The trade-off**: software that ignores EXIF orientation shows the old or
 honours it. The new value is found by trying the eight orientations against `editor::apply_rotation_flip_raw`,
 so there is one definition of rotation direction, not a second table to keep in step. `mozjpeg` was dropped.
 
+## A re-encoded save keeps the source's EXIF and ICC profile (2026-11-01)
+Every save that is not a pure JPEG rotation re-encodes pixels (`src/save.rs`). It used to write pixels only, so
+one Ctrl+S after an exposure tweak erased camera, date, exposure and GPS, and the ICC profile — and with it the
+colours of any image not in sRGB, since Patina does not colour-manage and the pixels stay in the source's space.
+Now the source's EXIF and ICC go into the new file, through `image`'s own `icc_profile`/`exif_metadata` and
+`set_icc_profile`/`set_exif_metadata`: no new dependency. JPEG, PNG and WebP take both, TIFF the profile, BMP
+neither. **The EXIF is changed in two places**, because the loader already turned the pixels upright:
+Orientation becomes 1, or every viewer would turn the image a second time; and IFD1 is cut, because its thumbnail
+still shows the image before the edit, which Explorer and camera apps display. An EXIF block that cannot be
+parsed for that is dropped, not copied. Save As takes the metadata of the file that was open, including for an
+export resized for the web. Saves now go through a temporary file and a rename, as sidecars do, so a failed
+encode no longer leaves a truncated original.
+
 ## Delete moves the file to the Recycle Bin (2026-11-01)
 It was `std::fs::remove_file` — permanent, no undo — with the error discarded, under a dialog that said *"This
 cannot be undone"*. It now goes through the `trash` crate, as in Devoid Viewer: a safe API over the shell's
@@ -97,10 +110,17 @@ Patina uses the full-filename form, as darktable does. Lightroom and Capture One
 Patina sets on a RAW are invisible to them, and theirs to Patina. Recommendation: read both, write to whichever
 exists, and create `photo.jpg.xmp` only when neither does.
 
-## Saving re-encoded pixels drops all metadata
-Any save that is not a pure JPEG rotation goes through `save_image_to_path_opts`, which writes pixels only: EXIF
-(camera, date, GPS), ICC profile and XMP are lost. Orientation stays correct, because the pixels written are
-already turned. Recommendation: carry EXIF and ICC across, with Orientation reset to 1.
+## What a re-encoded save still loses
+Left over from carrying EXIF and ICC across (above), each measured or read in `image` 0.25.10:
+- **XMP embedded in the file** (Lightroom, darktable, keywords) — `image` has no XMP encoder.
+- **RAW and JPEG XL sources** give no metadata — `image` does not open them; `rawler` and `jxl-oxide` would.
+- **A TIFF source's ICC profile** — `image` writes the tag but reads none back, not even its own.
+- **Stale EXIF fields** — PixelXDimension/PixelYDimension keep the source's size after a resize or a 90° turn.
+  Readers use the frame's real size, so this is cosmetic.
+
+## GPS in a web export
+The *Web* preset keeps the location like every other save. Lightroom and most export tools offer to strip it for
+sharing. Recommendation: the Web preset removes GPS (one IFD pointer in IFD0), the others keep it.
 
 ## WebP "quality" is ignored
 The `image` crate's WebP encoder is lossless only, so the *Archive (WebP 90%)* preset writes lossless WebP and the

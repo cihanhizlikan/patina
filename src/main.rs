@@ -19,7 +19,7 @@
 static LOG_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 macro_rules! log {
     ($($arg:tt)*) => {{
-        let t = LOG_START.get_or_init(std::time::Instant::now).elapsed();
+        let t = $crate::LOG_START.get_or_init(std::time::Instant::now).elapsed();
         eprintln!("[{:6}.{:03}] {}", t.as_secs(), t.subsec_millis(), format_args!($($arg)*));
     }};
 }
@@ -33,6 +33,7 @@ mod preset_thumbs;
 mod exif;
 mod xmp;
 mod orientation;
+mod save;
 
 use std::{
     collections::HashMap,
@@ -739,7 +740,7 @@ impl App {
                 log!("[save] orientation already as shown; file not written");
             })
         } else {
-            save_image_to_path(&display, &path, self.frame_index)
+            save::to_path(&display, self.frame_index, &path, 95, None, &save::Metadata::read(&path))
         };
         if let Err(e) = saved {
             self.pending_error = Some(format!("Save failed:\n{e}"));
@@ -776,7 +777,8 @@ impl App {
                        quality: u8, max_dim: Option<u32>) {
         let Some(es) = &self.editor_state else { return };
         let display  = es.display.clone();
-        if let Err(e) = save_image_to_path_opts(&display, &dest, self.frame_index, quality, max_dim) {
+        let meta     = self.current_path.as_deref().map(save::Metadata::read).unwrap_or_default();
+        if let Err(e) = save::to_path(&display, self.frame_index, &dest, quality, max_dim, &meta) {
             self.pending_error = Some(format!("Save failed:\n{e}"));
             return;
         }
@@ -1957,51 +1959,6 @@ fn is_jpeg_path(path: &Path) -> bool {
             .map(|e| e.to_ascii_lowercase()).as_deref(),
         Some("jpg") | Some("jpeg")
     )
-}
-
-fn save_image_to_path(img: &DecodedImage, path: &Path, frame: usize) -> anyhow::Result<()> {
-    save_image_to_path_opts(img, path, frame, 95, None)
-}
-
-fn save_image_to_path_opts(
-    img:     &DecodedImage,
-    path:    &Path,
-    frame:   usize,
-    quality: u8,
-    max_dim: Option<u32>,
-) -> anyhow::Result<()> {
-    use image::{ImageBuffer, Rgba, DynamicImage};
-    let frame  = img.frame(frame);
-    let rgba: ImageBuffer<Rgba<u8>, _> =
-        ImageBuffer::from_raw(img.width, img.height, frame.pixels.clone())
-            .ok_or_else(|| anyhow::anyhow!("pixel buffer size mismatch: {}×{}", img.width, img.height))?;
-
-    let dynamic = DynamicImage::ImageRgba8(rgba);
-
-    // Resize if a max dimension is specified and the image exceeds it.
-    let dynamic = if let Some(max) = max_dim {
-        if dynamic.width() > max || dynamic.height() > max {
-            dynamic.resize(max, max, image::imageops::FilterType::Lanczos3)
-        } else { dynamic }
-    } else { dynamic };
-
-    let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
-    match ext.as_deref() {
-        Some("jpg") | Some("jpeg") => {
-            let rgb = dynamic.to_rgb8();
-            let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
-            let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality);
-            enc.encode_image(&rgb)?;
-        }
-        Some("webp") => {
-            // The `image` crate's WebP encoder is lossless-only; the quality field
-            // has no effect for WebP output. Lossy WebP requires the `webp` crate.
-            dynamic.to_rgba8().save(path)?;
-        }
-        Some("bmp") => { dynamic.to_rgb8().save(path)?; }
-        _ => { dynamic.save(path)?; }
-    }
-    Ok(())
 }
 
 fn install_fonts(ctx: &egui::Context) {
