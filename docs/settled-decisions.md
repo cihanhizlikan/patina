@@ -27,7 +27,16 @@ on every frame.
 
 ## Ratings and colour labels live in XMP sidecars
 Not written into the image file: `<image>.xmp` next to it, holding `xmp:Rating` (0–5) and `xmp:Label`
-(`src/xmp.rs`), the convention Lightroom and Capture One use.
+(`src/xmp.rs`).
+
+## A sidecar Patina did not write is edited, never replaced (2026-11-01)
+A sidecar from darktable (same `photo.jpg.xmp` name) or another tool holds edit history, develop settings and
+keywords. `write_labels` changes only the `xmp:Rating` and `xmp:Label` values in place, adds them to the first
+`rdf:Description` when absent, and keeps every other byte. Clearing the labels deletes the sidecar only when it
+is exactly the packet Patina writes. A file it cannot edit is left alone and the error reaches a dialog. Writes
+go through a temporary file and a rename, so a crash cannot truncate a sidecar. **No XML parser**: a
+read-modify-write through a DOM would reformat the whole file, which is the damage this rule exists to prevent;
+on-disk tests in `src/xmp.rs` hold the byte-for-byte guarantee.
 
 ## Paths are used as given — no `canonicalize` (inherited)
 `std::fs::canonicalize` on Windows returns a verbatim `\\?\C:\…` path, which breaks paths handed over by
@@ -52,13 +61,10 @@ event loop (`src/loader.rs`).
 
 Found while writing the baseline (2026-11-01). Each is a candidate until measured; none is settled.
 
-## Writing a rating overwrites the whole sidecar
-`write_labels` replaces any existing `.xmp` with a two-field packet, and clearing the labels deletes the file. A
-sidecar made by Lightroom or darktable holds develop settings, keywords and more; touching a star throws them away.
-Both callers in `src/main.rs` discard the write's error, so a failed save is silent. Recommendation: update only
-`xmp:Rating` and `xmp:Label` in place, never delete a sidecar Patina did not create, and surface write errors.
-(The read side could not even see Patina's own sidecars until `fix/xmp-roundtrip`: it only matched
-double-quoted attributes, and the writer emits single quotes.)
+## Sidecar name: `photo.jpg.xmp` or `photo.xmp`
+Patina uses the full-filename form, as darktable does. Lightroom and Capture One use `photo.xmp`, so ratings
+Patina sets on a RAW are invisible to them, and theirs to Patina. Recommendation: read both, write to whichever
+exists, and create `photo.jpg.xmp` only when neither does.
 
 ## "Lossless" JPEG save is a re-encode at quality 95
 `lossless_jpeg_transform` decodes, rotates the pixels and re-encodes at a fixed quality 95, overwriting the file in

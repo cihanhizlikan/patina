@@ -1220,7 +1220,10 @@ impl App {
                 if key!(no, key) {
                     if let Some(path) = &self.current_path {
                         self.labels.rating = rating;
-                        let _ = xmp::write_labels(path, &self.labels);
+                        if let Err(e) = xmp::write_labels(path, &self.labels) {
+                            self.pending_error = Some(format!("Could not save the rating:\n{e}"));
+                            self.labels = xmp::read_labels(path);
+                        }
                     }
                 }
             }
@@ -1235,7 +1238,10 @@ impl App {
                         ColourLabel::Blue   => ColourLabel::Purple,
                         ColourLabel::Purple => ColourLabel::None,
                     };
-                    let _ = xmp::write_labels(path, &self.labels);
+                    if let Err(e) = xmp::write_labels(path, &self.labels) {
+                        self.pending_error = Some(format!("Could not save the colour label:\n{e}"));
+                        self.labels = xmp::read_labels(path);
+                    }
                 }
             }
             if key!(no, egui::Key::Q)          { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
