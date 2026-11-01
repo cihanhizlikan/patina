@@ -56,15 +56,15 @@ fn oriented(o: u8) -> (Vec<u8>, u32, u32) {
 // ── Save ──────────────────────────────────────────────────────────────────────
 
 /// Save the rotation and flips of `p` to the JPEG at `path` as its EXIF
-/// orientation. Does not write when the orientation would not change.
-pub fn save_geometry(path: &Path, p: &EditParams) -> anyhow::Result<()> {
+/// orientation. Does not write when the orientation would not change, and
+/// returns whether it wrote.
+pub fn save_geometry(path: &Path, p: &EditParams) -> anyhow::Result<bool> {
     let bytes = std::fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
     let out   = with_geometry(&bytes, p)?;
-    if out != bytes {
-        crate::xmp::write_atomic(path, &out)
-            .with_context(|| format!("could not write {}", path.display()))?;
-    }
-    Ok(())
+    if out == bytes { return Ok(false); }
+    crate::xmp::write_atomic(path, &out)
+        .with_context(|| format!("could not write {}", path.display()))?;
+    Ok(true)
 }
 
 /// `jpeg` with its orientation advanced by `p`.
@@ -332,7 +332,7 @@ mod tests {
         std::fs::write(&path, &original).unwrap();
         assert_eq!(as_loaded(&path), (16, 8, [RED, BLUE, BLUE, RED]));
 
-        save_geometry(&path, &params(Rotation::R90, false, false)).unwrap();
+        assert!(save_geometry(&path, &params(Rotation::R90, false, false)).unwrap(), "reported a write");
 
         // Clockwise: the red left half is now on top.
         assert_eq!(as_loaded(&path), (8, 16, [RED, RED, BLUE, BLUE]));
@@ -381,9 +381,27 @@ mod tests {
         let original = red_left_jpeg();
         std::fs::write(&path, &original).unwrap();
 
-        save_geometry(&path, &params(Rotation::R180, true, true)).unwrap(); // flipping both ways is 180°
+        // Flipping both ways is 180°.
+        assert!(!save_geometry(&path, &params(Rotation::R180, true, true)).unwrap(), "reported no write");
 
         assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    /// What happens after a save: the editor resets, so the next Ctrl+S
+    /// carries no rotation. It must neither write nor claim to.
+    #[test]
+    fn saving_again_with_no_edits_reports_no_write() {
+        let dir  = TempDir::new("resave");
+        let path = dir.0.join("a.jpg");
+        std::fs::write(&path, red_left_jpeg()).unwrap();
+        assert!(save_geometry(&path, &params(Rotation::R90, false, false)).unwrap());
+        let before = std::fs::read(&path).unwrap();
+        let mtime  = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+        assert!(!save_geometry(&path, &EditParams::default()).unwrap());
+
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), mtime, "the file was not rewritten");
     }
 
     #[test]

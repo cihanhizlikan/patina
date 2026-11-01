@@ -733,8 +733,11 @@ impl App {
         // A JPEG that was only rotated or flipped keeps its compressed data:
         // the change goes into the EXIF orientation (see orientation.rs).
         let saved = if is_pure_geometry(&params) && is_jpeg_path(&path) {
-            orientation::save_geometry(&path, &params)
-                .inspect(|_| log!("[save] EXIF orientation written; image data untouched"))
+            orientation::save_geometry(&path, &params).map(|wrote| if wrote {
+                log!("[save] EXIF orientation written; image data untouched");
+            } else {
+                log!("[save] orientation already as shown; file not written");
+            })
         } else {
             save_image_to_path(&display, &path, self.frame_index)
         };
