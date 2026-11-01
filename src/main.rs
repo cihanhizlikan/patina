@@ -77,7 +77,7 @@ enum Msg {
     WrongExtension { path: PathBuf, image: DecodedImage, mode: OpenMode, correct_ext: String },
     Unsupported    { path: PathBuf, reason: String },
     Preloaded      { path: PathBuf, image: DecodedImage },
-    Deleted        { path: PathBuf },
+    Deleted        { path: PathBuf, result: Result<(), String> },
     MetadataLoaded { path: PathBuf, meta: ImageMetadata },
     DirectoryChanged,
 }
@@ -499,10 +499,18 @@ impl App {
                 Msg::Preloaded { path, image } => {
                     self.preload_cache.insert(path, image);
                 }
-                Msg::Deleted { path } => {
-                    log!("[delete] done: {}", path.display());
+                Msg::Deleted { path, result } => {
                     self.deleting = false;
-                    self.navigator.remove(&path);
+                    match result {
+                        Ok(()) => {
+                            log!("[delete] moved to the Recycle Bin: {}", path.display());
+                            self.navigator.remove(&path);
+                            self.preload_cache.remove(&path);
+                        }
+                        // The view has already moved on; the file is still
+                        // there and still in the list, so it can be reopened.
+                        Err(e) => dr.error_msg = Some(format!("Could not delete {}\n\n{e}", path.display())),
+                    }
                 }
                 Msg::MetadataLoaded { path, meta } => {
                     // Only apply if this is still the current image.
@@ -809,8 +817,8 @@ impl App {
         let tx  = self.msg_tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let _ = std::fs::remove_file(&path);
-            let _ = tx.send(Msg::Deleted { path });
+            let result = move_to_trash(&path);
+            let _ = tx.send(Msg::Deleted { path, result });
             ctx.request_repaint();
         });
     }
@@ -1771,7 +1779,7 @@ fn draw_modal(ctx: &egui::Context, modal: &ModalDialog, icons: Option<&ui::Icons
                     ui.label(egui::RichText::new("Delete image?").color(TEXT).size(16.0).strong());
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new(
-                        format!("Permanently delete\n\n{filename}?\n\nThis cannot be undone.")
+                        format!("Move\n\n{filename}\n\nto the Recycle Bin?")
                     ).color(DIM).size(13.0));
                     btn_row(ui, &mut |ui| {
                         if modal_btn(ui, "Delete", icons.map(|ic| &ic.reset), ModalBtnKind::Danger).clicked() { action = Some(ModalAction::Delete); }
@@ -1857,6 +1865,20 @@ impl PanelActionExt for PanelAction {
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
+
+/// Move `path` to the Recycle Bin (or the platform's trash), so a delete can
+/// be undone. Where a volume has no Recycle Bin, Windows asks before
+/// destroying the file.
+///
+/// `trash` unwraps a failed COM instantiation internally. Patina does not
+/// abort on panic, so an uncaught one would end only the delete thread: no
+/// `Msg::Deleted`, and `deleting` stuck at true would block every later
+/// delete. Caught here, it becomes an error the user sees.
+fn move_to_trash(path: &Path) -> Result<(), String> {
+    std::panic::catch_unwind(|| trash::delete(path))
+        .map_err(|_| "the Recycle Bin could not be reached".to_string())?
+        .map_err(|e| e.to_string())
+}
 
 fn update_title(ctx: &egui::Context, name: Option<&str>) {
     let title = name.map(|n| format!("{APP_NAME} — {n}"))
@@ -2053,4 +2075,28 @@ fn main() {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         Box::new(app) as Box<dyn eframe::App>
     })).expect("eframe failed to start");
+}
+
+#[cfg(test)]
+mod trash_tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_file_is_an_error_not_a_panic() {
+        let path = std::env::temp_dir().join(format!("patina-no-such-file-{}.jpg", std::process::id()));
+        assert!(move_to_trash(&path).is_err());
+    }
+
+    /// Puts a real file in the real Recycle Bin, so it is not run by default:
+    /// `cargo test -- --ignored recycle`. Then check the bin for the file.
+    #[test]
+    #[ignore = "writes to the user's Recycle Bin"]
+    fn a_file_goes_to_the_recycle_bin() {
+        let path = std::env::temp_dir().join(format!("patina-recycle-test-{}.txt", std::process::id()));
+        std::fs::write(&path, "patina recycle test").unwrap();
+
+        move_to_trash(&path).unwrap();
+
+        assert!(!path.exists());
+    }
 }

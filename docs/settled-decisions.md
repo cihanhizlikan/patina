@@ -39,6 +39,15 @@ data. **The trade-off**: software that ignores EXIF orientation shows the old or
 honours it. The new value is found by trying the eight orientations against `editor::apply_rotation_flip_raw`,
 so there is one definition of rotation direction, not a second table to keep in step. `mozjpeg` was dropped.
 
+## Delete moves the file to the Recycle Bin (2026-11-01)
+It was `std::fs::remove_file` — permanent, no undo — with the error discarded, under a dialog that said *"This
+cannot be undone"*. It now goes through the `trash` crate, as in Devoid Viewer: a safe API over the shell's
+`IFileOperation` with `FOF_ALLOWUNDO` (and the macOS and freedesktop trashes), so no `unsafe` of ours; where a
+volume has no Recycle Bin, Windows asks before destroying the file. A failure reaches a dialog and the file stays
+in the list. `trash` unwraps a failed COM instantiation internally; unlike Devoid, Patina does not abort on
+panic, so `move_to_trash` catches it — otherwise the delete thread would die silently and `deleting` would stay
+true, blocking every later delete.
+
 ## Ratings and colour labels live in XMP sidecars
 Not written into the image file: `<image>.xmp` next to it, holding `xmp:Rating` (0–5) and `xmp:Label`
 (`src/xmp.rs`).
@@ -100,10 +109,6 @@ quality field does nothing (the code says so; the UI does not).
 ## Window size and RAW files ignore orientation
 `image_size_hint` sizes the first window from the stored dimensions, so a portrait phone photo opens in a
 landscape window. RAW files go through `rawler`, whose orientation Patina does not apply.
-
-## Delete is permanent
-`execute_delete` calls `std::fs::remove_file`: no Recycle Bin, no undo, and errors are discarded. Devoid Viewer
-moved to the `trash` crate for the same reason (Devoid's settled decision of 2026-10-31).
 
 ## The Windows build opens a console window
 There is no `#![windows_subsystem = "windows"]`, so every launch on Windows shows a console beside the window,

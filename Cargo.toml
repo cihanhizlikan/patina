@@ -32,6 +32,14 @@ notify-debouncer-mini = { version = "0.4", default-features = false }
 # ── Threading ─────────────────────────────────────────────────────────────────
 crossbeam-channel = "0.5"
 
+# ── Recycle Bin / Trash ───────────────────────────────────────────────────────
+# Delete moves the file to the Recycle Bin (Windows: IFileOperation with
+# FOF_ALLOWUNDO), the macOS Trash or the freedesktop trash, behind a safe
+# API, so no `unsafe` of ours. Default features off: `chrono` only serves
+# listing the freedesktop trash, which Patina never does. Same crate and
+# settings as Devoid Viewer.
+trash = { version = "5.2", default-features = false, features = ["coinit_apartmentthreaded"] }
+
 # ── Cross-platform file dialogs ───────────────────────────────────────────────
 rfd = "0.14"
 
