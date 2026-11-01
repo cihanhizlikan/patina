@@ -19,8 +19,8 @@ loader, navigator and path rules.
 ## Critical rules
 - **Read [docs/settled-decisions.md](docs/settled-decisions.md) before proposing a change to rendering, paths,
   formats, directory listing, the edit pipeline or sidecars.** A decision there is re-opened by a new fact, never
-  by an argument. Where a change genuinely moves one, revise the entry in the same commit. Its *Open decisions*
-  section is the work queue.
+  by an argument. Where a change genuinely moves one, revise the entry in the same commit.
+- **[docs/roadmap.md](docs/roadmap.md) is the work queue, in order.** Update it in the commit that lands an item.
 - **Never work on `main`.** Branch off its tip (`feature/<slug>`, `fix/<slug>`, `chore/<slug>`); merging and
   pushing are the maintainer's.
 - **Verify with the `/verify` skill before calling anything green.** Report its numbers, not an impression.
