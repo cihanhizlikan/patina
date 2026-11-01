@@ -61,6 +61,17 @@ in the list. `trash` unwraps a failed COM instantiation internally; unlike Devoi
 panic, so `move_to_trash` catches it — otherwise the delete thread would die silently and `deleting` would stay
 true, blocking every later delete.
 
+## The keyboard belongs to whatever is open; shortcuts match exactly (2026-11-01)
+`process_keyboard` stands down while a dialog, Save As, the help overlay or a text field is open, and the open
+thing handles its own keys: in a dialog **Esc is always the way out that changes nothing** and Enter takes the
+first button (Save, Delete, Rename, OK; Delete is recoverable, so Enter may trash, as in Explorer). A Ctrl
+shortcut matches its modifiers exactly (`consume_shortcut`), because egui's `consume_key` ignores an extra Shift.
+Each rule closed a measured data-loss path: Ctrl+Shift+S saved over the original, Ctrl+Shift+Z undid, Esc in
+*Save changes?* discarded the edits, a letter typed into the Save As filename ran its shortcut (Q started a quit),
+and the arrow keys moved the view under an open delete dialog. **The delete dialog holds the path it names**, and
+save-and-quit closes only when the save succeeded. `keyboard_tests` in `src/main.rs` drive real key events through
+an egui context and check the files on disk; each fails with its fix reverted.
+
 ## Ratings and colour labels live in XMP sidecars
 Not written into the image file: `<image>.xmp` next to it, holding `xmp:Rating` (0–5) and `xmp:Label`
 (`src/xmp.rs`).

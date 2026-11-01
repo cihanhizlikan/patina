@@ -95,7 +95,9 @@ struct DrainResult {
 #[derive(Debug)]
 enum ModalDialog {
     SaveOnExit    { save_and_quit: bool },
-    ConfirmDelete { filename: String },
+    /// Holds the file it asks about, so Delete trashes that file even if the
+    /// view has moved on since the dialog opened.
+    ConfirmDelete { path: PathBuf },
     OfferRename   { old_path: PathBuf, new_path: PathBuf, old_ext: String, new_ext: String },
     Error         { message: String },
 }
@@ -277,7 +279,7 @@ struct App {
     save_as_modal:            Option<SaveAsModal>,
     pending_error:            Option<String>,
     pending_rename:           Option<(PathBuf, String)>,
-    pending_confirmed_delete: bool,
+    pending_delete:           Option<PathBuf>,
     pending_save_and_exit:    Option<bool>,
     show_help:                bool,
 }
@@ -326,7 +328,7 @@ impl App {
             save_as_modal:            None,
             pending_error:            None,
             pending_rename:           None,
-            pending_confirmed_delete: false,
+            pending_delete:           None,
             pending_save_and_exit:    None,
             show_help:                false,
         }
@@ -597,7 +599,11 @@ impl App {
     /// Returns `true` if the editor was exited or was already closed.
     fn exit_editor(&mut self, quit_intent: bool) -> bool {
         if self.editor_state.is_none() { return true; }
-        if self.editor_params_changed() && self.modal.is_none() {
+        // A dialog is already asking something: leave the editor only through
+        // its answer. Exiting here discarded the edits "Save changes?" was
+        // asking about.
+        if self.modal.is_some() { return false; }
+        if self.editor_params_changed() {
             self.modal = Some(ModalDialog::SaveOnExit { save_and_quit: quit_intent });
             return false;
         }
@@ -725,9 +731,11 @@ impl App {
 
     // ── Save / delete ─────────────────────────────────────────────────────────
 
-    fn save_inplace(&mut self, ctx: &egui::Context) {
-        let Some(path) = self.current_path.clone() else { return };
-        let Some(es)   = &self.editor_state         else { return };
+    /// Returns whether the file now holds the edits; a failure is reported
+    /// through `pending_error`.
+    fn save_inplace(&mut self, ctx: &egui::Context) -> bool {
+        let Some(path) = self.current_path.clone() else { return false };
+        let Some(es)   = &self.editor_state         else { return false };
         let params     = es.undo.current().clone();
         let display    = es.display.clone();
 
@@ -744,7 +752,7 @@ impl App {
         };
         if let Err(e) = saved {
             self.pending_error = Some(format!("Save failed:\n{e}"));
-            return;
+            return false;
         }
         // The file now holds what is on screen, so it becomes the image the
         // next edit starts from, as in commit_save_as. Without this the edit
@@ -753,6 +761,7 @@ impl App {
         self.image_gen += 1;
         update_title(ctx, self.current_filename().as_deref());
         self.reset_editor_after_save();
+        true
     }
 
     /// Opens the custom Save As modal; actual write happens on confirm.
@@ -801,23 +810,24 @@ impl App {
     fn delete_current(&mut self) {
         let Some(path) = &self.current_path else { return };
         if self.deleting { return; }
-        let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("this file");
-        self.modal = Some(ModalDialog::ConfirmDelete { filename: fname.to_string() });
+        self.modal = Some(ModalDialog::ConfirmDelete { path: path.clone() });
     }
 
-    fn execute_delete(&mut self, ctx: &egui::Context) {
-        let Some(path) = self.current_path.clone() else { return };
+    /// Move `path`, the file the dialog named, to the Recycle Bin.
+    fn execute_delete(&mut self, path: PathBuf, ctx: &egui::Context) {
         if self.deleting { return; }
         self.deleting = true;
 
-        // Always exit editor mode on delete — the file is going away.
-        if self.in_editor() { self.do_exit_editor(); }
+        // Leave the image only when it is the one going away.
+        if self.current_path.as_ref() == Some(&path) {
+            if self.in_editor() { self.do_exit_editor(); }
 
-        // Navigate away before deleting so display doesn't go blank.
-        let next = self.navigator.next().filter(|p| p != &path)
-            .or_else(|| self.navigator.prev().filter(|p| p != &path));
-        if let Some(np) = next { self.open_image(np, OpenMode::Navigate, ctx); }
-        else                   { self.clear_image(); }
+            // Navigate away before deleting so display doesn't go blank.
+            let next = self.navigator.next().filter(|p| p != &path)
+                .or_else(|| self.navigator.prev().filter(|p| p != &path));
+            if let Some(np) = next { self.open_image(np, OpenMode::Navigate, ctx); }
+            else                   { self.clear_image(); }
+        }
 
         let tx  = self.msg_tx.clone();
         let ctx = ctx.clone();
@@ -858,14 +868,21 @@ impl App {
             self.fullscreen = !self.fullscreen;
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
         }
+        self.apply_pending_actions(ctx);
+    }
+
+    /// Carry out what a dialog answered last frame.
+    fn apply_pending_actions(&mut self, ctx: &egui::Context) {
         if let Some(quit_after) = self.pending_save_and_exit.take() {
-            self.save_inplace(ctx);
-            self.do_exit_editor();
-            if quit_after { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
+            // A failed save keeps the editor, the edits and the window open;
+            // its error dialog is next frame's modal.
+            if self.save_inplace(ctx) {
+                self.do_exit_editor();
+                if quit_after { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
+            }
         }
-        if self.pending_confirmed_delete {
-            self.pending_confirmed_delete = false;
-            self.execute_delete(ctx);
+        if let Some(path) = self.pending_delete.take() {
+            self.execute_delete(path, ctx);
         }
     }
 
@@ -1155,17 +1172,25 @@ impl App {
         }
     }
 
-    /// Handle all keyboard shortcuts for this frame using `consume_key`.
+    /// Handle the app's keyboard shortcuts for this frame.
     ///
-    /// `consume_key` bypasses egui's "consumed" flag, ensuring app shortcuts
-    /// fire even when widgets have focus. All shortcuts are polled every frame.
+    /// While a dialog, Save As, the help overlay or a text field is open, the
+    /// keyboard is theirs and this does nothing. Before, a letter typed into
+    /// the Save As filename also ran its shortcut (Q started a quit), and the
+    /// arrow keys moved to another image under an open delete dialog.
     fn process_keyboard(&mut self, ctx: &egui::Context) {
+        if self.modal.is_some() || self.save_as_modal.is_some() || self.show_help
+            || ctx.wants_keyboard_input()
+        {
+            return;
+        }
+
         let no   = egui::Modifiers::NONE;
         let ctrl = egui::Modifiers::COMMAND;
         let cs   = ctrl | egui::Modifiers::SHIFT;
 
         macro_rules! key {
-            ($mods:expr, $k:expr) => { ctx.input_mut(|i| i.consume_key($mods, $k)) };
+            ($mods:expr, $k:expr) => { ctx.input_mut(|i| consume_shortcut(i, $mods, $k)) };
         }
 
         if self.in_editor() {
@@ -1257,6 +1282,27 @@ impl App {
             if key!(no, egui::Key::Q)          { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
         }
     }
+}
+
+/// Consume a press of `key` made with `mods`. A Ctrl shortcut matches its
+/// modifiers exactly: egui's `consume_key` ignores an extra Shift, so
+/// Ctrl+Shift+S also matched Ctrl+S and saved over the original instead of
+/// opening Save As, and Ctrl+Shift+Z undid instead of redoing. A plain key
+/// still ignores Shift, which some layouts need for digits (AZERTY), but not
+/// Ctrl or Alt.
+fn consume_shortcut(i: &mut egui::InputState, mods: egui::Modifiers, key: egui::Key) -> bool {
+    let fits = |pressed: &egui::Modifiers| {
+        if mods.command || mods.ctrl { pressed.matches_exact(mods) }
+        else                         { !pressed.alt && pressed.matches_logically(mods) }
+    };
+    let mut hit = false;
+    i.events.retain(|e| {
+        let this = matches!(e, egui::Event::Key { key: k, modifiers, pressed: true, .. }
+                               if *k == key && fits(modifiers));
+        hit |= this;
+        !this
+    });
+    hit
 }
 
 // ── Help modal ────────────────────────────────────────────────────────────────
@@ -1689,6 +1735,8 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
             if let Some(m) = &mut app.save_as_modal { m.directory = dir; }
         }
     }
+    // Esc closes Save As; the editor's own Esc stands down while it is open.
+    if ctx.input_mut(|i| consume_shortcut(i, egui::Modifiers::NONE, egui::Key::Escape)) { cancel = true; }
     if cancel  { app.save_as_modal = None; }
     if confirm {
         if let Some(m) = app.save_as_modal.take() {
@@ -1780,7 +1828,8 @@ fn draw_modal(ctx: &egui::Context, modal: &ModalDialog, icons: Option<&ui::Icons
                         if modal_btn(ui, "Cancel",  None,                      ModalBtnKind::Default).clicked() { action = Some(ModalAction::Dismiss); }
                     });
                 }
-                ModalDialog::ConfirmDelete { filename } => {
+                ModalDialog::ConfirmDelete { path } => {
+                    let filename = path.file_name().unwrap_or_default().to_string_lossy();
                     ui.label(egui::RichText::new("Delete image?").color(TEXT).size(16.0).strong());
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new(
@@ -1814,7 +1863,26 @@ fn draw_modal(ctx: &egui::Context, modal: &ModalDialog, icons: Option<&ui::Icons
             }
         });
 
-    action
+    // The keyboard is the dialog's while it is open (process_keyboard stands
+    // down): Esc is always the way out that changes nothing, and Enter takes
+    // the first button. The delete goes to the Recycle Bin, so Enter may
+    // delete, as in Explorer.
+    let (enter, esc) = ctx.input_mut(|i| (
+        consume_shortcut(i, egui::Modifiers::NONE, egui::Key::Enter),
+        consume_shortcut(i, egui::Modifiers::NONE, egui::Key::Escape),
+    ));
+    action.or(if esc {
+        Some(ModalAction::Dismiss)
+    } else if enter {
+        Some(match modal {
+            ModalDialog::SaveOnExit    { .. } => ModalAction::Save,
+            ModalDialog::ConfirmDelete { .. } => ModalAction::Delete,
+            ModalDialog::OfferRename   { .. } => ModalAction::Rename,
+            ModalDialog::Error         { .. } => ModalAction::Dismiss,
+        })
+    } else {
+        None
+    })
 }
 
 /// Type-safe modal action — replaces the stringly-typed `&str` approach.
@@ -1832,7 +1900,11 @@ fn apply_modal_action(app: &mut App, action: ModalAction) {
             }
         }
         ModalAction::Discard => { app.do_exit_editor(); }
-        ModalAction::Delete  => { app.pending_confirmed_delete = true; }
+        ModalAction::Delete  => {
+            if let Some(ModalDialog::ConfirmDelete { path }) = &app.modal {
+                app.pending_delete = Some(path.clone());
+            }
+        }
         ModalAction::Rename  => {
             if let Some(ModalDialog::OfferRename { old_path, new_path, .. }) = &app.modal {
                 let (old, new) = (old_path.clone(), new_path.clone());
@@ -2058,5 +2130,240 @@ mod trash_tests {
         move_to_trash(&path).unwrap();
 
         assert!(!path.exists());
+    }
+}
+
+/// Keyboard and dialog paths that write or delete the user's files, driven
+/// the way eframe drives the app: real key events through an egui context,
+/// the same per-frame order as `update` minus the GPU upload, and the files
+/// checked on disk afterwards.
+#[cfg(test)]
+mod keyboard_tests {
+    use super::*;
+    use egui::{Key, Modifiers};
+
+    /// A fresh, empty directory under the system temp dir, removed on drop.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("patina-keys-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn jpeg(&self, name: &str) -> PathBuf {
+            let path = self.0.join(name);
+            image::RgbImage::from_pixel(16, 8, image::Rgb([200, 60, 40])).save(&path).unwrap();
+            path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
+    /// The app showing `path` in the viewer, as after it loaded.
+    fn app_on(path: &Path) -> (App, egui::Context) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut app = App::new(tx, rx);
+        let LoadOutcome::Ok(img) = load_image(path) else { panic!("{} did not load", path.display()) };
+        app.navigator.set_current(path.to_path_buf());
+        app.current_path  = Some(path.to_path_buf());
+        app.current_image = Some(img);
+        (app, egui::Context::default())
+    }
+
+    /// Open the editor and make an unsaved edit.
+    fn edit(app: &mut App, ctx: &egui::Context) {
+        app.enter_editor(ctx);
+        let p = EditParams { exposure: 0.5, ..EditParams::default() };
+        app.editor_state.as_mut().unwrap().commit(p);
+        assert!(app.editor_params_changed());
+    }
+
+    fn press(key: Key, modifiers: Modifiers) -> egui::Event {
+        egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+    }
+
+    /// One frame with `events`; returns whether it asked the window to close.
+    fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) -> bool {
+        let raw = egui::RawInput {
+            events,
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))),
+            ..Default::default()
+        };
+        let out = ctx.run(raw, |ctx| {
+            app.apply_pending_actions(ctx);
+            app.draw_ui(ctx);
+            app.process_keyboard(ctx);
+        });
+        out.viewport_output.values().any(|v| v.commands.contains(&egui::ViewportCommand::Close))
+    }
+
+    const CTRL:       Modifiers = Modifiers::COMMAND;
+    const CTRL_SHIFT: Modifiers = Modifiers { shift: true, ..Modifiers::COMMAND };
+    // What winit reports on Windows for Ctrl: both flags set.
+    const WIN_CTRL:       Modifiers = Modifiers { ctrl: true, ..Modifiers::COMMAND };
+    const WIN_CTRL_SHIFT: Modifiers = Modifiers { ctrl: true, shift: true, ..Modifiers::COMMAND };
+
+    #[test]
+    fn ctrl_shift_s_opens_save_as_and_leaves_the_file_alone() {
+        let dir  = TempDir::new("saveas");
+        let path = dir.jpeg("photo.jpg");
+        let before = std::fs::read(&path).unwrap();
+        let (mut app, ctx) = app_on(&path);
+        edit(&mut app, &ctx);
+
+        frame(&mut app, &ctx, vec![press(Key::S, WIN_CTRL_SHIFT)]);
+
+        assert!(app.save_as_modal.is_some(), "Save As opened");
+        assert_eq!(std::fs::read(&path).unwrap(), before, "the original is untouched");
+        assert!(app.editor_params_changed(), "the edit is still unsaved");
+
+        // Ctrl+S on its own still saves in place.
+        frame(&mut app, &ctx, vec![press(Key::Escape, Modifiers::NONE)]);
+        assert!(app.save_as_modal.is_none(), "Esc closed Save As");
+        assert!(app.in_editor(), "the same Esc did not also leave the editor");
+        frame(&mut app, &ctx, vec![press(Key::S, WIN_CTRL)]);
+        assert_ne!(std::fs::read(&path).unwrap(), before, "Ctrl+S wrote the file");
+    }
+
+    #[test]
+    fn ctrl_shift_z_redoes() {
+        let dir = TempDir::new("redo");
+        let (mut app, ctx) = app_on(&dir.jpeg("photo.jpg"));
+        edit(&mut app, &ctx);
+
+        frame(&mut app, &ctx, vec![press(Key::Z, CTRL)]);
+        assert!(!app.editor_params_changed(), "Ctrl+Z undid");
+        frame(&mut app, &ctx, vec![press(Key::Z, CTRL_SHIFT)]);
+        assert!(app.editor_params_changed(), "Ctrl+Shift+Z redid instead of undoing again");
+    }
+
+    #[test]
+    fn esc_in_save_changes_keeps_the_edits() {
+        let dir  = TempDir::new("esc");
+        let path = dir.jpeg("photo.jpg");
+        let before = std::fs::read(&path).unwrap();
+        let (mut app, ctx) = app_on(&path);
+        edit(&mut app, &ctx);
+
+        frame(&mut app, &ctx, vec![press(Key::Escape, Modifiers::NONE)]);
+        assert!(matches!(app.modal, Some(ModalDialog::SaveOnExit { .. })), "{:?}", app.modal);
+
+        frame(&mut app, &ctx, vec![press(Key::Escape, Modifiers::NONE)]);
+
+        assert!(app.modal.is_none(), "Esc dismissed the dialog");
+        assert!(app.in_editor() && app.editor_params_changed(), "and kept the editor and the edit");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn typing_a_filename_in_save_as_runs_no_shortcuts() {
+        let dir = TempDir::new("typing");
+        let (mut app, ctx) = app_on(&dir.jpeg("photo.jpg"));
+        edit(&mut app, &ctx);
+        app.save_as_returning(&ctx);
+
+        // Q quit, E left the editor, F went fullscreen, H opened help.
+        let typed = [Key::Q, Key::E, Key::F, Key::H].map(|k| press(k, Modifiers::NONE));
+        let closed = frame(&mut app, &ctx, typed.to_vec());
+
+        assert!(!closed);
+        assert!(app.modal.is_none(), "{:?}", app.modal);
+        assert!(app.in_editor() && app.editor_params_changed());
+        assert!(!app.show_help && !app.pending_fullscreen_toggle);
+        assert!(app.save_as_modal.is_some());
+    }
+
+    #[test]
+    fn the_delete_dialog_deletes_the_file_it_names() {
+        let dir   = TempDir::new("delete");
+        let named = dir.jpeg("a.jpg");
+        let other = dir.jpeg("b.jpg");
+        let (mut app, ctx) = app_on(&named);
+
+        frame(&mut app, &ctx, vec![press(Key::Delete, Modifiers::NONE)]);
+        assert!(matches!(&app.modal, Some(ModalDialog::ConfirmDelete { path }) if *path == named));
+
+        // The arrows no longer move the view under the dialog...
+        frame(&mut app, &ctx, vec![press(Key::ArrowRight, Modifiers::NONE)]);
+        assert_eq!(app.current_path.as_ref(), Some(&named));
+        // ...and should anything else move it, the dialog still means a.jpg.
+        app.current_path = Some(other.clone());
+        frame(&mut app, &ctx, vec![press(Key::Enter, Modifiers::NONE)]);
+
+        assert_eq!(app.pending_delete.as_ref(), Some(&named));
+        // Stop here: the next frame would send a.jpg to the real Recycle Bin.
+        // `deletes_the_named_file_on_disk` below runs that step.
+        app.pending_delete = None;
+        assert!(named.exists() && other.exists());
+    }
+
+    /// Runs the whole delete, so it writes to the real Recycle Bin:
+    /// `cargo test -- --ignored named_file`.
+    #[test]
+    #[ignore = "writes to the user's Recycle Bin"]
+    fn deletes_the_named_file_on_disk() {
+        let dir   = TempDir::new("delete-disk");
+        let named = dir.jpeg("patina-delete-test-a.jpg");
+        let other = dir.jpeg("patina-delete-test-b.jpg");
+        let (mut app, ctx) = app_on(&named);
+
+        frame(&mut app, &ctx, vec![press(Key::Delete, Modifiers::NONE)]);
+        app.current_path = Some(other.clone());
+        frame(&mut app, &ctx, vec![press(Key::Enter, Modifiers::NONE)]);
+        frame(&mut app, &ctx, vec![]);
+        let Ok(Msg::Deleted { path, result }) = app.msg_rx.recv_timeout(Duration::from_secs(10))
+            else { panic!("no delete result") };
+
+        assert_eq!(path, named);
+        assert_eq!(result, Ok(()));
+        assert!(!named.exists(), "the named file went to the Recycle Bin");
+        assert!(other.exists(), "the one on screen did not");
+        assert_eq!(app.current_path.as_ref(), Some(&other), "and stayed on screen");
+    }
+
+    #[test]
+    fn save_and_quit_with_a_failed_save_keeps_the_window_and_the_edits() {
+        let dir  = TempDir::new("quitfail");
+        let path = dir.jpeg("photo.jpg");
+        let before = std::fs::read(&path).unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&path, perms.clone()).unwrap();
+        let (mut app, ctx) = app_on(&path);
+        edit(&mut app, &ctx);
+
+        frame(&mut app, &ctx, vec![press(Key::Q, Modifiers::NONE)]);
+        assert!(matches!(app.modal, Some(ModalDialog::SaveOnExit { save_and_quit: true })), "{:?}", app.modal);
+        frame(&mut app, &ctx, vec![press(Key::Enter, Modifiers::NONE)]);
+        let closed = frame(&mut app, &ctx, vec![]);
+
+        assert!(!closed, "the window stayed open");
+        assert!(app.in_editor() && app.editor_params_changed(), "with the edits");
+        assert!(matches!(app.modal, Some(ModalDialog::Error { .. })), "and the error shown: {:?}", app.modal);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        #[allow(clippy::permissions_set_readonly_false)] // a test file, removed with its directory
+        perms.set_readonly(false);
+        std::fs::set_permissions(&path, perms).unwrap();
+    }
+
+    #[test]
+    fn save_and_quit_with_a_good_save_writes_then_closes() {
+        let dir  = TempDir::new("quitok");
+        let path = dir.jpeg("photo.jpg");
+        let before = std::fs::read(&path).unwrap();
+        let (mut app, ctx) = app_on(&path);
+        edit(&mut app, &ctx);
+
+        frame(&mut app, &ctx, vec![press(Key::Q, Modifiers::NONE)]);
+        frame(&mut app, &ctx, vec![press(Key::Enter, Modifiers::NONE)]);
+        let closed = frame(&mut app, &ctx, vec![]);
+
+        assert!(closed);
+        assert_ne!(std::fs::read(&path).unwrap(), before);
     }
 }
