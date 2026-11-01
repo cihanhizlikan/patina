@@ -15,21 +15,20 @@
 //! - rfd (file dialogs) is cross-platform.
 //! - build.rs / winres embeds the Windows icon but is a no-op on Linux/macOS.
 
-/// Timestamped debug logger — shared clock across all threads.
-static LOG_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+// No console window in release builds: on Windows every launch opened one
+// beside the app. The log goes to a file instead (logging.rs). Debug builds
+// and `cargo run` keep the console. Other platforms ignore the attribute.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+/// Patina's log line: `log::info!`, timestamped and written by logging.rs.
 macro_rules! log {
-    ($($arg:tt)*) => {{
-        let t = $crate::LOG_START.get_or_init(std::time::Instant::now).elapsed();
-        eprintln!("[{:6}.{:03}] {}", t.as_secs(), t.subsec_millis(), format_args!($($arg)*));
-    }};
-}
-fn init_log() {
-    LOG_START.get_or_init(std::time::Instant::now);
+    ($($arg:tt)*) => { ::log::info!($($arg)*) };
 }
 
 mod editor;
 mod exif;
 mod loader;
+mod logging;
 mod nav;
 mod orientation;
 mod preset_thumbs;
@@ -1991,7 +1990,7 @@ fn upload_image_texture(
         return;
     }
     let Some(rs) = frame.wgpu_render_state() else {
-        eprintln!("[upload] wgpu render state unavailable");
+        ::log::error!("[upload] wgpu render state unavailable");
         return;
     };
 
@@ -2886,7 +2885,7 @@ fn image_size_hint(path: &Path) -> Option<(u32, u32)> {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
-    init_log();
+    logging::init();
 
     let initial_path: Option<PathBuf> = std::env::args().nth(1).map(PathBuf::from);
     let (init_w, init_h) = initial_path

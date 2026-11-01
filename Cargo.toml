@@ -26,6 +26,12 @@ jxl-oxide = { version = "0.10" }
 # ── Error handling ────────────────────────────────────────────────────────────
 anyhow = "1"
 
+# ── Logging ───────────────────────────────────────────────────────────────────
+# The facade eframe, winit and wgpu already log through (0.4.29 was in
+# Cargo.lock before Patina named it, so it adds no code to the binary).
+# The logger itself is ours, in logging.rs; no framework crate.
+log = "0.4"
+
 # ── Filesystem watching ───────────────────────────────────────────────────────
 notify-debouncer-mini = { version = "0.4", default-features = false }
 

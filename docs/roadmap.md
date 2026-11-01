@@ -20,10 +20,8 @@ tiles. The viewer keeps its zero-chrome canvas. The editor rail is reorganised a
 ## Foundations
 
 1. ~~**rustfmt.**~~ Done — see settled-decisions.md.
-2. **Logging.** The `log` facade (eframe, winit and wgpu already emit through it and their output is lost today)
-   with Patina's own small logger: stderr plus a per-user file (`%LOCALAPPDATA%\Patina\patina.log`,
-   `$XDG_STATE_HOME/patina/patina.log`), the previous run kept as `.1`. No console window in release builds.
-   **Before a release**, the log needs a more elegant way in than a file path — e.g. *Help → Open log folder*.
+2. ~~**Logging.**~~ Done — see settled-decisions.md. **Still owed before a release**: the log needs a more
+   elegant way in than a file path, e.g. *Help → Open log folder*, or a *Copy log* button on the error dialog.
 3. **Windows-app basics.** The title follows navigation (`● IMG_0412.jpg — 12 / 129 — Patina`, ● for unsaved
    edits). One keymap table drives both the handler and the help overlay, so they cannot drift (help omits 0–5 and
    L today); Tab goes back to egui focus, G cycles guides Off → Thirds → Golden.

@@ -109,6 +109,19 @@ commit first, so later diffs show only real changes. The hand-aligned columns we
 `cargo fmt --check` diff. The formatting commit is listed in `.git-blame-ignore-revs`
 (`git config blame.ignoreRevsFile .git-blame-ignore-revs`). Same choice as Devoid Viewer.
 
+## Logging goes through `log` to a per-user file; release builds have no console (2026-11-01)
+Every launch on Windows opened a console beside the window, because it was the only place the `eprintln!` log
+went. The maintainer chose to hide it and keep the log, with Linux in view. Patina now logs through the `log`
+facade — the Rust standard, and what eframe, winit and wgpu already emit through: before, nothing installed a
+logger, so their warnings, GPU errors among them, were dropped. The logger is ours (`src/logging.rs`, about 60
+lines), not `env_logger` or `tracing`: it needs no configuration, filters (Patina from Info, dependencies from
+Warn) and two sinks, which a framework would add code for and not save any. `log` was already in `Cargo.lock`.
+Lines go to stderr and to `%LOCALAPPDATA%\Patina\patina.log`, or `$XDG_STATE_HOME/patina/` else
+`~/.local/state/patina/` (the XDG home for logs). The previous run is kept as `patina.log.1`, so a crash's log
+survives one relaunch and the file never grows across runs. A panic is logged before the default hook runs.
+`#![windows_subsystem = "windows"]` applies to release builds only; debug builds and `cargo run` keep the console.
+**Not a release yet**: a user cannot find the file without being told the path (docs/roadmap.md).
+
 ## Paths are used as given — no `canonicalize` (inherited)
 `std::fs::canonicalize` on Windows returns a verbatim `\\?\C:\…` path, which breaks paths handed over by
 archivers. **Build-enforced**: both `canonicalize` functions are banned in `clippy.toml`, and
@@ -156,10 +169,6 @@ quality field does nothing (the code says so; the UI does not).
 ## Window size and RAW files ignore orientation
 `image_size_hint` sizes the first window from the stored dimensions, so a portrait phone photo opens in a
 landscape window. RAW files go through `rawler`, whose orientation Patina does not apply.
-
-## The Windows build opens a console window
-There is no `#![windows_subsystem = "windows"]`, so every launch on Windows shows a console beside the window,
-which is where the `log!` macro's `eprintln!` lines go. **Whether the console is wanted was not recorded.**
 
 ## The icon is not embedded in the executable
 `winres` is a build-dependency and the module doc mentions `build.rs`, but there is no `build.rs`. Explorer and the

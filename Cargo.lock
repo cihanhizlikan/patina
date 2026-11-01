@@ -3097,6 +3097,7 @@ dependencies = [
  "image 0.25.10",
  "jxl-oxide",
  "kamadak-exif",
+ "log",
  "notify-debouncer-mini",
  "rawler",
  "rayon",
