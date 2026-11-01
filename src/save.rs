@@ -24,7 +24,7 @@ use crate::loader::DecodedImage;
 /// The metadata a save carries from the source file.
 #[derive(Default, Debug)]
 pub struct Metadata {
-    pub icc:  Option<Vec<u8>>,
+    pub icc: Option<Vec<u8>>,
     /// The TIFF bytes of the EXIF block, already true of upright pixels.
     pub exif: Option<Vec<u8>>,
 }
@@ -33,8 +33,10 @@ impl Metadata {
     /// The ICC profile and EXIF of the image file at `path`. A save in place
     /// reads this before it overwrites the file.
     pub fn read(path: &Path) -> Self {
-        let Ok(mut dec) = decoder(path) else { return Self::default() };
-        let icc  = dec.icc_profile().ok().flatten();
+        let Ok(mut dec) = decoder(path) else {
+            return Self::default();
+        };
+        let icc = dec.icc_profile().ok().flatten();
         let exif = dec.exif_metadata().ok().flatten().and_then(|mut exif| {
             // An EXIF block that cannot be set upright is dropped, not
             // copied: an Orientation left in it would turn the image twice.
@@ -48,22 +50,25 @@ impl Metadata {
 }
 
 fn decoder(path: &Path) -> image::ImageResult<impl ImageDecoder> {
-    image::ImageReader::open(path)?.with_guessed_format()?.into_decoder()
+    image::ImageReader::open(path)?
+        .with_guessed_format()?
+        .into_decoder()
 }
 
 /// Encode frame `frame` of `img` to `path` in the format its extension
 /// names, scaled down to fit `max_dim`, with `meta`. Written through a
 /// temporary file and a rename, so a failed save leaves the old file whole.
 pub fn to_path(
-    img:     &DecodedImage,
-    frame:   usize,
-    path:    &Path,
+    img: &DecodedImage,
+    frame: usize,
+    path: &Path,
     quality: u8,
     max_dim: Option<u32>,
-    meta:    &Metadata,
+    meta: &Metadata,
 ) -> anyhow::Result<()> {
-    let rgba = image::RgbaImage::from_raw(img.width, img.height, img.frame(frame).pixels.clone())
-        .ok_or_else(|| anyhow!("pixel buffer size mismatch: {}×{}", img.width, img.height))?;
+    let rgba =
+        image::RgbaImage::from_raw(img.width, img.height, img.frame(frame).pixels.clone())
+            .ok_or_else(|| anyhow!("pixel buffer size mismatch: {}×{}", img.width, img.height))?;
     let mut dynamic = DynamicImage::ImageRgba8(rgba);
 
     // Resize if a max dimension is specified and the image exceeds it.
@@ -74,38 +79,72 @@ pub fn to_path(
     }
 
     use image::codecs::{jpeg::JpegEncoder, png::PngEncoder, tiff::TiffEncoder, webp::WebPEncoder};
-    let (w, h)  = (dynamic.width(), dynamic.height());
+    let (w, h) = (dynamic.width(), dynamic.height());
     let mut out = Vec::new();
-    let ext     = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
     match ext.as_deref() {
-        Some("jpg" | "jpeg") => encode(JpegEncoder::new_with_quality(&mut out, quality), meta,
-                                       &dynamic.to_rgb8(), w, h, ExtendedColorType::Rgb8)?,
-        Some("png")          => encode(PngEncoder::new(&mut out), meta,
-                                       &dynamic.to_rgba8(), w, h, ExtendedColorType::Rgba8)?,
+        Some("jpg" | "jpeg") => encode(
+            JpegEncoder::new_with_quality(&mut out, quality),
+            meta,
+            &dynamic.to_rgb8(),
+            w,
+            h,
+            ExtendedColorType::Rgb8,
+        )?,
+        Some("png") => encode(
+            PngEncoder::new(&mut out),
+            meta,
+            &dynamic.to_rgba8(),
+            w,
+            h,
+            ExtendedColorType::Rgba8,
+        )?,
         // The `image` crate's WebP encoder is lossless-only; the quality field
         // has no effect for WebP output. Lossy WebP requires the `webp` crate.
-        Some("webp")         => encode(WebPEncoder::new_lossless(&mut out), meta,
-                                       &dynamic.to_rgba8(), w, h, ExtendedColorType::Rgba8)?,
-        Some("tif" | "tiff") => encode(TiffEncoder::new(Cursor::new(&mut out)), meta,
-                                       &dynamic.to_rgba8(), w, h, ExtendedColorType::Rgba8)?,
-        Some("bmp")          => dynamic.to_rgb8().write_to(&mut Cursor::new(&mut out), ImageFormat::Bmp)?,
-        _                    => dynamic.write_to(&mut Cursor::new(&mut out), ImageFormat::from_path(path)?)?,
+        Some("webp") => encode(
+            WebPEncoder::new_lossless(&mut out),
+            meta,
+            &dynamic.to_rgba8(),
+            w,
+            h,
+            ExtendedColorType::Rgba8,
+        )?,
+        Some("tif" | "tiff") => encode(
+            TiffEncoder::new(Cursor::new(&mut out)),
+            meta,
+            &dynamic.to_rgba8(),
+            w,
+            h,
+            ExtendedColorType::Rgba8,
+        )?,
+        Some("bmp") => dynamic
+            .to_rgb8()
+            .write_to(&mut Cursor::new(&mut out), ImageFormat::Bmp)?,
+        _ => dynamic.write_to(&mut Cursor::new(&mut out), ImageFormat::from_path(path)?)?,
     }
-    crate::xmp::write_atomic(path, &out).with_context(|| format!("could not write {}", path.display()))
+    crate::xmp::write_atomic(path, &out)
+        .with_context(|| format!("could not write {}", path.display()))
 }
 
 fn encode(
     mut enc: impl ImageEncoder,
-    meta:    &Metadata,
-    pixels:  &[u8],
-    w:       u32,
-    h:       u32,
-    colour:  ExtendedColorType,
+    meta: &Metadata,
+    pixels: &[u8],
+    w: u32,
+    h: u32,
+    colour: ExtendedColorType,
 ) -> image::ImageResult<()> {
     // A format that cannot hold one of them refuses it (TIFF refuses EXIF);
     // the image is saved all the same.
-    if let Some(icc)  = &meta.icc  { let _ = enc.set_icc_profile(icc.clone()); }
-    if let Some(exif) = &meta.exif { let _ = enc.set_exif_metadata(exif.clone()); }
+    if let Some(icc) = &meta.icc {
+        let _ = enc.set_icc_profile(icc.clone());
+    }
+    if let Some(exif) = &meta.exif {
+        let _ = enc.set_exif_metadata(exif.clone());
+    }
     enc.write_image(pixels, w, h, colour)
 }
 
@@ -123,7 +162,8 @@ mod tests {
 
     impl TempDir {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("patina-save-{name}-{}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("patina-save-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             Self(dir)
@@ -131,10 +171,12 @@ mod tests {
     }
 
     impl Drop for TempDir {
-        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
-    const RED:  [u8; 3] = [255, 0, 0];
+    const RED: [u8; 3] = [255, 0, 0];
     const BLUE: [u8; 3] = [0, 0, 255];
 
     /// Not a real profile: the save copies it without reading it, so the
@@ -146,13 +188,13 @@ mod tests {
     /// thumbnail's Compression tag.
     fn phone_exif() -> Vec<u8> {
         let mut t = vec![b'I', b'I', 42, 0, 8, 0, 0, 0];
-        t.extend_from_slice(&[2, 0]);                                           // IFD0 at 8: two entries
-        t.extend_from_slice(&[0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0]);       // Orientation = 6
-        t.extend_from_slice(&[0x31, 0x01, 2, 0, 7, 0, 0, 0, 38, 0, 0, 0]);      // Software, 7 bytes at 38
-        t.extend_from_slice(&[46, 0, 0, 0]);                                    // IFD1 at 46
-        t.extend_from_slice(b"Patina\0\0");                                     // 38..46, padded
-        t.extend_from_slice(&[1, 0]);                                           // IFD1: one entry
-        t.extend_from_slice(&[0x03, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0]);       // Compression = JPEG
+        t.extend_from_slice(&[2, 0]); // IFD0 at 8: two entries
+        t.extend_from_slice(&[0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0]); // Orientation = 6
+        t.extend_from_slice(&[0x31, 0x01, 2, 0, 7, 0, 0, 0, 38, 0, 0, 0]); // Software, 7 bytes at 38
+        t.extend_from_slice(&[46, 0, 0, 0]); // IFD1 at 46
+        t.extend_from_slice(b"Patina\0\0"); // 38..46, padded
+        t.extend_from_slice(&[1, 0]); // IFD1: one entry
+        t.extend_from_slice(&[0x03, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0]); // Compression = JPEG
         t.extend_from_slice(&[0, 0, 0, 0]);
         t
     }
@@ -160,17 +202,21 @@ mod tests {
     /// A 16×8 JPEG, left half red, right half blue, tagged Orientation 6 and
     /// carrying an ICC profile: on screen it is 8×16 with red on top.
     fn phone_jpeg(path: &Path) {
-        let img = image::RgbImage::from_fn(16, 8, |x, _| image::Rgb(if x < 8 { RED } else { BLUE }));
+        let img =
+            image::RgbImage::from_fn(16, 8, |x, _| image::Rgb(if x < 8 { RED } else { BLUE }));
         let mut out = Vec::new();
         let mut enc = JpegEncoder::new_with_quality(&mut out, 90);
         enc.set_icc_profile(ICC.to_vec()).unwrap();
         enc.set_exif_metadata(phone_exif()).unwrap();
-        enc.write_image(img.as_raw(), 16, 8, ExtendedColorType::Rgb8).unwrap();
+        enc.write_image(img.as_raw(), 16, 8, ExtendedColorType::Rgb8)
+            .unwrap();
         std::fs::write(path, out).unwrap();
     }
 
     fn loaded(path: &Path) -> DecodedImage {
-        let LoadOutcome::Ok(img) = load_image(path) else { panic!("{} did not load", path.display()) };
+        let LoadOutcome::Ok(img) = load_image(path) else {
+            panic!("{} did not load", path.display())
+        };
         img
     }
 
@@ -178,16 +224,22 @@ mod tests {
     /// as Patina shows the file, so a second turn would show.
     fn as_shown(path: &Path) -> (u32, u32, [u8; 3], [u8; 3]) {
         let img = loaded(path);
-        let at  = |x: u32, y: u32| {
+        let at = |x: u32, y: u32| {
             let p = &img.frames[0].pixels[((y * img.width + x) * 4) as usize..][..3];
-            if p[0] > p[2] { RED } else { BLUE }
+            if p[0] > p[2] {
+                RED
+            } else {
+                BLUE
+            }
         };
         (img.width, img.height, at(1, 1), at(1, img.height - 2))
     }
 
     fn exif_of(path: &Path) -> Option<::exif::Exif> {
         let file = std::fs::File::open(path).unwrap();
-        ::exif::Reader::new().read_from_container(&mut std::io::BufReader::new(file)).ok()
+        ::exif::Reader::new()
+            .read_from_container(&mut std::io::BufReader::new(file))
+            .ok()
     }
 
     fn uint(exif: &::exif::Exif, tag: ::exif::Tag, ifd: ::exif::In) -> Option<u32> {
@@ -207,28 +259,51 @@ mod tests {
         phone_jpeg(&src);
         assert_eq!(as_shown(&src), (8, 16, RED, BLUE));
         let exif = exif_of(&src).unwrap();
-        assert_eq!(uint(&exif, ::exif::Tag::Orientation, ::exif::In::PRIMARY), Some(6));
-        assert_eq!(uint(&exif, ::exif::Tag::Compression, ::exif::In::THUMBNAIL), Some(6));
+        assert_eq!(
+            uint(&exif, ::exif::Tag::Orientation, ::exif::In::PRIMARY),
+            Some(6)
+        );
+        assert_eq!(
+            uint(&exif, ::exif::Tag::Compression, ::exif::In::THUMBNAIL),
+            Some(6)
+        );
         assert_eq!(icc_of(&src).as_deref(), Some(ICC));
     }
 
     /// Ctrl+S on an edited JPEG: the file is re-encoded over itself.
     #[test]
     fn saving_a_jpeg_in_place_keeps_its_exif_and_profile_and_stays_upright() {
-        let dir  = TempDir::new("inplace");
+        let dir = TempDir::new("inplace");
         let path = dir.0.join("phone.jpg");
         phone_jpeg(&path);
-        let img  = loaded(&path);
+        let img = loaded(&path);
 
         to_path(&img, 0, &path, 95, None, &Metadata::read(&path)).unwrap();
 
         let exif = exif_of(&path).expect("the EXIF survived");
-        let software = exif.get_field(::exif::Tag::Software, ::exif::In::PRIMARY).map(|f| f.value.clone());
-        assert!(matches!(&software, Some(::exif::Value::Ascii(v)) if v[0] == b"Patina"), "{software:?}");
-        assert_eq!(uint(&exif, ::exif::Tag::Orientation, ::exif::In::PRIMARY), Some(1), "the pixels are turned already");
-        assert_eq!(uint(&exif, ::exif::Tag::Compression, ::exif::In::THUMBNAIL), None, "the stale thumbnail is gone");
+        let software = exif
+            .get_field(::exif::Tag::Software, ::exif::In::PRIMARY)
+            .map(|f| f.value.clone());
+        assert!(
+            matches!(&software, Some(::exif::Value::Ascii(v)) if v[0] == b"Patina"),
+            "{software:?}"
+        );
+        assert_eq!(
+            uint(&exif, ::exif::Tag::Orientation, ::exif::In::PRIMARY),
+            Some(1),
+            "the pixels are turned already"
+        );
+        assert_eq!(
+            uint(&exif, ::exif::Tag::Compression, ::exif::In::THUMBNAIL),
+            None,
+            "the stale thumbnail is gone"
+        );
         assert_eq!(icc_of(&path).as_deref(), Some(ICC));
-        assert_eq!(as_shown(&path), (8, 16, RED, BLUE), "shown as before the save, not turned again");
+        assert_eq!(
+            as_shown(&path),
+            (8, 16, RED, BLUE),
+            "shown as before the save, not turned again"
+        );
         assert!(!dir.0.join("phone.jpg.tmp").exists());
     }
 
@@ -238,7 +313,7 @@ mod tests {
         let dir = TempDir::new("formats");
         let src = dir.0.join("phone.jpg");
         phone_jpeg(&src);
-        let img  = loaded(&src);
+        let img = loaded(&src);
         let meta = Metadata::read(&src);
 
         for (name, has_exif) in [("out.png", true), ("out.webp", true), ("out.tif", false)] {
@@ -251,13 +326,19 @@ mod tests {
                 // `image` writes a TIFF's profile but does not read one back,
                 // so look for it in the file: a TIFF tag stores it as is.
                 let bytes = std::fs::read(&dest).unwrap();
-                assert!(bytes.windows(ICC.len()).any(|w| w == ICC), "{name}: the profile is in the file");
+                assert!(
+                    bytes.windows(ICC.len()).any(|w| w == ICC),
+                    "{name}: the profile is in the file"
+                );
             }
             let exif = decoder(&dest).unwrap().exif_metadata().unwrap();
             assert_eq!(exif.is_some(), has_exif, "{name}");
             if let Some(exif) = exif {
-                assert_eq!(image::metadata::Orientation::from_exif_chunk(&exif),
-                           Some(image::metadata::Orientation::NoTransforms), "{name}");
+                assert_eq!(
+                    image::metadata::Orientation::from_exif_chunk(&exif),
+                    Some(image::metadata::Orientation::NoTransforms),
+                    "{name}"
+                );
             }
             assert_eq!(as_shown(&dest), (8, 16, RED, BLUE), "{name}");
         }
@@ -265,8 +346,8 @@ mod tests {
 
     #[test]
     fn a_resized_export_keeps_the_metadata() {
-        let dir  = TempDir::new("resize");
-        let src  = dir.0.join("phone.jpg");
+        let dir = TempDir::new("resize");
+        let src = dir.0.join("phone.jpg");
         let dest = dir.0.join("web.jpg");
         phone_jpeg(&src);
 
@@ -279,10 +360,12 @@ mod tests {
 
     #[test]
     fn a_source_without_metadata_saves_without_it() {
-        let dir  = TempDir::new("bare");
-        let src  = dir.0.join("bare.png");
+        let dir = TempDir::new("bare");
+        let src = dir.0.join("bare.png");
         let dest = dir.0.join("bare.jpg");
-        image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 255, 255])).save(&src).unwrap();
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 255, 255]))
+            .save(&src)
+            .unwrap();
 
         let meta = Metadata::read(&src);
         assert!(meta.icc.is_none() && meta.exif.is_none(), "{meta:?}");
@@ -295,11 +378,14 @@ mod tests {
     /// A save that cannot encode leaves the file it would replace whole.
     #[test]
     fn a_failed_save_leaves_the_old_file() {
-        let dir  = TempDir::new("fail");
+        let dir = TempDir::new("fail");
         let path = dir.0.join("photo.jpg");
         phone_jpeg(&path);
         let before = std::fs::read(&path).unwrap();
-        let wrong  = DecodedImage { width: 99, ..loaded(&path) }; // buffer no longer fits
+        let wrong = DecodedImage {
+            width: 99,
+            ..loaded(&path)
+        }; // buffer no longer fits
 
         assert!(to_path(&wrong, 0, &path, 95, None, &Metadata::read(&path)).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), before);

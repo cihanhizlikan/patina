@@ -15,35 +15,46 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ColourLabel {
-    #[default] None,
-    Red, Yellow, Green, Blue, Purple,
+    #[default]
+    None,
+    Red,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
 }
 
 impl ColourLabel {
     pub fn xmp_name(self) -> &'static str {
         match self {
-            Self::None   => "",      Self::Red    => "Red",
-            Self::Yellow => "Yellow",Self::Green  => "Green",
-            Self::Blue   => "Blue",  Self::Purple => "Purple",
+            Self::None => "",
+            Self::Red => "Red",
+            Self::Yellow => "Yellow",
+            Self::Green => "Green",
+            Self::Blue => "Blue",
+            Self::Purple => "Purple",
         }
     }
 
     pub fn from_xmp(s: &str) -> Self {
         match s.trim() {
-            "Red"    => Self::Red,    "Yellow" => Self::Yellow,
-            "Green"  => Self::Green,  "Blue"   => Self::Blue,
-            "Purple" => Self::Purple, _        => Self::None,
+            "Red" => Self::Red,
+            "Yellow" => Self::Yellow,
+            "Green" => Self::Green,
+            "Blue" => Self::Blue,
+            "Purple" => Self::Purple,
+            _ => Self::None,
         }
     }
 
     /// egui colour for the label dot in the viewer.
     pub fn color(self) -> egui::Color32 {
         match self {
-            Self::None   => egui::Color32::TRANSPARENT,
-            Self::Red    => egui::Color32::from_rgb(0xE0, 0x55, 0x45),
+            Self::None => egui::Color32::TRANSPARENT,
+            Self::Red => egui::Color32::from_rgb(0xE0, 0x55, 0x45),
             Self::Yellow => egui::Color32::from_rgb(0xE8, 0xC0, 0x40),
-            Self::Green  => egui::Color32::from_rgb(0x50, 0xB8, 0x70),
-            Self::Blue   => egui::Color32::from_rgb(0x50, 0x90, 0xD8),
+            Self::Green => egui::Color32::from_rgb(0x50, 0xB8, 0x70),
+            Self::Blue => egui::Color32::from_rgb(0x50, 0x90, 0xD8),
             Self::Purple => egui::Color32::from_rgb(0xA0, 0x60, 0xD0),
         }
     }
@@ -88,7 +99,9 @@ pub fn sidecar_path(image_path: &Path) -> PathBuf {
 /// Returns `ImageLabels::default()` if no sidecar exists or parsing fails.
 pub fn read_labels(image_path: &Path) -> ImageLabels {
     let xmp_path = sidecar_path(image_path);
-    let Ok(text) = std::fs::read_to_string(&xmp_path) else { return ImageLabels::default(); };
+    let Ok(text) = std::fs::read_to_string(&xmp_path) else {
+        return ImageLabels::default();
+    };
     parse_xmp(&text)
 }
 
@@ -116,17 +129,17 @@ fn value_span(text: &str, tag: &str) -> Option<Range<usize>> {
 fn attr_span(text: &str, tag: &str) -> Option<Range<usize>> {
     ['"', '\''].into_iter().find_map(|quote| {
         let needle = format!("{tag}={quote}");
-        let start  = text.find(&needle)? + needle.len();
-        let end    = text[start..].find(quote)? + start;
+        let start = text.find(&needle)? + needle.len();
+        let end = text[start..].find(quote)? + start;
         Some(start..end)
     })
 }
 
 fn element_span(text: &str, tag: &str) -> Option<Range<usize>> {
-    let open  = format!("<{tag}>");
+    let open = format!("<{tag}>");
     let close = format!("</{tag}>");
     let start = text.find(&open)? + open.len();
-    let end   = text[start..].find(&close)? + start;
+    let end = text[start..].find(&close)? + start;
     Some(start..end)
 }
 
@@ -167,14 +180,17 @@ fn is_own_packet(text: &str) -> bool {
 pub fn write_labels(image_path: &Path, labels: &ImageLabels) -> std::io::Result<()> {
     let xmp_path = sidecar_path(image_path);
     let existing = match std::fs::read_to_string(&xmp_path) {
-        Ok(text)                                           => Some(text),
+        Ok(text) => Some(text),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e)                                             => return Err(e),
+        Err(e) => return Err(e),
     };
 
     match existing {
         None if labels.is_empty() => Ok(()),
-        None => write_atomic(&xmp_path, build_xmp_packet(labels.rating, labels.colour.xmp_name())),
+        None => write_atomic(
+            &xmp_path,
+            build_xmp_packet(labels.rating, labels.colour.xmp_name()),
+        ),
         Some(text) if labels.is_empty() && is_own_packet(&text) => std::fs::remove_file(&xmp_path),
         Some(text) => write_atomic(&xmp_path, &set_labels(&text, labels)?),
     }
@@ -182,8 +198,18 @@ pub fn write_labels(image_path: &Path, labels: &ImageLabels) -> std::io::Result<
 
 /// `text` with the rating and label set, everything else untouched.
 fn set_labels(text: &str, labels: &ImageLabels) -> std::io::Result<String> {
-    let text = set_value(text, "xmp:Rating", &labels.rating.to_string(), labels.rating == 0)?;
-    set_value(&text, "xmp:Label", labels.colour.xmp_name(), labels.colour == ColourLabel::None)
+    let text = set_value(
+        text,
+        "xmp:Rating",
+        &labels.rating.to_string(),
+        labels.rating == 0,
+    )?;
+    set_value(
+        &text,
+        "xmp:Label",
+        labels.colour.xmp_name(),
+        labels.colour == ColourLabel::None,
+    )
 }
 
 /// Replace a tag's value where it is; otherwise add it as an attribute of the
@@ -195,15 +221,22 @@ fn set_value(text: &str, tag: &str, value: &str, is_default: bool) -> std::io::R
         out.replace_range(span, value);
         return Ok(out);
     }
-    if is_default { return Ok(text.to_owned()); }
+    if is_default {
+        return Ok(text.to_owned());
+    }
 
     const DESCRIPTION: &str = "<rdf:Description";
-    let at = text.find(DESCRIPTION).ok_or_else(|| std::io::Error::new(
-        std::io::ErrorKind::InvalidData,
-        "the sidecar has no rdf:Description to add the rating to; it was left unchanged",
-    ))? + DESCRIPTION.len();
-    let namespace = if text.contains("xmlns:xmp=") { "" }
-                    else { " xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\"" };
+    let at = text.find(DESCRIPTION).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "the sidecar has no rdf:Description to add the rating to; it was left unchanged",
+        )
+    })? + DESCRIPTION.len();
+    let namespace = if text.contains("xmlns:xmp=") {
+        ""
+    } else {
+        " xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\""
+    };
     let mut out = text.to_owned();
     out.insert_str(at, &format!("{namespace} {tag}=\"{value}\""));
     Ok(out)
@@ -217,7 +250,9 @@ pub(crate) fn write_atomic(path: &Path, contents: impl AsRef<[u8]>) -> std::io::
     tmp_name.push(".tmp");
     let tmp = path.with_file_name(tmp_name);
     std::fs::write(&tmp, contents)?;
-    std::fs::rename(&tmp, path).inspect_err(|_| { let _ = std::fs::remove_file(&tmp); })
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -231,8 +266,8 @@ mod tests {
 
     impl TempDir {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir()
-                .join(format!("patina-xmp-{name}-{}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("patina-xmp-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             Self(dir)
@@ -240,14 +275,19 @@ mod tests {
     }
 
     impl Drop for TempDir {
-        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     #[test]
     fn labels_written_to_disk_are_read_back() {
-        let dir   = TempDir::new("roundtrip");
+        let dir = TempDir::new("roundtrip");
         let image = dir.0.join("photo.jpg");
-        let labels = ImageLabels { rating: 4, colour: ColourLabel::Green };
+        let labels = ImageLabels {
+            rating: 4,
+            colour: ColourLabel::Green,
+        };
 
         write_labels(&image, &labels).unwrap();
 
@@ -257,10 +297,16 @@ mod tests {
 
     #[test]
     fn every_rating_and_label_round_trips() {
-        let dir   = TempDir::new("all");
+        let dir = TempDir::new("all");
         let image = dir.0.join("a.png");
-        let colours = [ColourLabel::None, ColourLabel::Red, ColourLabel::Yellow,
-                       ColourLabel::Green, ColourLabel::Blue, ColourLabel::Purple];
+        let colours = [
+            ColourLabel::None,
+            ColourLabel::Red,
+            ColourLabel::Yellow,
+            ColourLabel::Green,
+            ColourLabel::Blue,
+            ColourLabel::Purple,
+        ];
         for rating in 0..=5 {
             for colour in colours {
                 let labels = ImageLabels { rating, colour };
@@ -274,7 +320,10 @@ mod tests {
     fn attribute_values_parse_with_either_quote() {
         let double = r#"<rdf:Description xmp:Rating="3" xmp:Label="Red"/>"#;
         let single = r#"<rdf:Description xmp:Rating='3' xmp:Label='Red'/>"#;
-        let want = ImageLabels { rating: 3, colour: ColourLabel::Red };
+        let want = ImageLabels {
+            rating: 3,
+            colour: ColourLabel::Red,
+        };
         assert_eq!(parse_xmp(double), want);
         assert_eq!(parse_xmp(single), want);
     }
@@ -301,51 +350,79 @@ mod tests {
 
     #[test]
     fn rating_a_foreign_sidecar_changes_only_the_rating() {
-        let dir   = TempDir::new("foreign");
+        let dir = TempDir::new("foreign");
         let image = dir.0.join("photo.jpg");
-        let xmp   = dir.0.join("photo.jpg.xmp");
+        let xmp = dir.0.join("photo.jpg.xmp");
         std::fs::write(&xmp, DARKTABLE).unwrap();
 
-        write_labels(&image, &ImageLabels { rating: 5, colour: ColourLabel::None }).unwrap();
+        write_labels(
+            &image,
+            &ImageLabels {
+                rating: 5,
+                colour: ColourLabel::None,
+            },
+        )
+        .unwrap();
 
         let on_disk = std::fs::read_to_string(&xmp).unwrap();
-        assert_eq!(on_disk, DARKTABLE.replace(r#"xmp:Rating="2""#, r#"xmp:Rating="5""#));
+        assert_eq!(
+            on_disk,
+            DARKTABLE.replace(r#"xmp:Rating="2""#, r#"xmp:Rating="5""#)
+        );
     }
 
     #[test]
     fn a_label_is_added_to_a_foreign_sidecar_without_losing_anything() {
-        let dir   = TempDir::new("addlabel");
+        let dir = TempDir::new("addlabel");
         let image = dir.0.join("photo.jpg");
-        let xmp   = dir.0.join("photo.jpg.xmp");
+        let xmp = dir.0.join("photo.jpg.xmp");
         std::fs::write(&xmp, DARKTABLE).unwrap();
 
-        let labels = ImageLabels { rating: 2, colour: ColourLabel::Purple };
+        let labels = ImageLabels {
+            rating: 2,
+            colour: ColourLabel::Purple,
+        };
         write_labels(&image, &labels).unwrap();
 
         let on_disk = std::fs::read_to_string(&xmp).unwrap();
-        assert_eq!(on_disk, DARKTABLE.replace(
-            "<rdf:Description rdf:about", r#"<rdf:Description xmp:Label="Purple" rdf:about"#));
+        assert_eq!(
+            on_disk,
+            DARKTABLE.replace(
+                "<rdf:Description rdf:about",
+                r#"<rdf:Description xmp:Label="Purple" rdf:about"#
+            )
+        );
         assert_eq!(read_labels(&image), labels);
     }
 
     #[test]
     fn clearing_labels_keeps_a_foreign_sidecar() {
-        let dir   = TempDir::new("clearforeign");
+        let dir = TempDir::new("clearforeign");
         let image = dir.0.join("photo.jpg");
-        let xmp   = dir.0.join("photo.jpg.xmp");
+        let xmp = dir.0.join("photo.jpg.xmp");
         std::fs::write(&xmp, DARKTABLE).unwrap();
 
         write_labels(&image, &ImageLabels::default()).unwrap();
 
         let on_disk = std::fs::read_to_string(&xmp).unwrap();
-        assert_eq!(on_disk, DARKTABLE.replace(r#"xmp:Rating="2""#, r#"xmp:Rating="0""#));
+        assert_eq!(
+            on_disk,
+            DARKTABLE.replace(r#"xmp:Rating="2""#, r#"xmp:Rating="0""#)
+        );
     }
 
     #[test]
     fn clearing_labels_removes_patinas_own_sidecar() {
-        let dir   = TempDir::new("clearown");
+        let dir = TempDir::new("clearown");
         let image = dir.0.join("photo.jpg");
-        write_labels(&image, &ImageLabels { rating: 3, colour: ColourLabel::Red }).unwrap();
+        write_labels(
+            &image,
+            &ImageLabels {
+                rating: 3,
+                colour: ColourLabel::Red,
+            },
+        )
+        .unwrap();
 
         write_labels(&image, &ImageLabels::default()).unwrap();
 
@@ -354,28 +431,47 @@ mod tests {
 
     #[test]
     fn the_xmp_namespace_is_declared_when_a_sidecar_lacks_it() {
-        let dir   = TempDir::new("nons");
+        let dir = TempDir::new("nons");
         let image = dir.0.join("photo.jpg");
-        let xmp   = dir.0.join("photo.jpg.xmp");
-        let bare  = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/"/></rdf:RDF></x:xmpmeta>"#;
+        let xmp = dir.0.join("photo.jpg.xmp");
+        let bare = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/"/></rdf:RDF></x:xmpmeta>"#;
         std::fs::write(&xmp, bare).unwrap();
 
-        write_labels(&image, &ImageLabels { rating: 1, colour: ColourLabel::None }).unwrap();
+        write_labels(
+            &image,
+            &ImageLabels {
+                rating: 1,
+                colour: ColourLabel::None,
+            },
+        )
+        .unwrap();
 
         let on_disk = std::fs::read_to_string(&xmp).unwrap();
-        assert!(on_disk.contains(r#"xmlns:xmp="http://ns.adobe.com/xap/1.0/""#), "{on_disk}");
-        assert!(on_disk.contains(r#"xmlns:dc="http://purl.org/dc/elements/1.1/""#), "{on_disk}");
+        assert!(
+            on_disk.contains(r#"xmlns:xmp="http://ns.adobe.com/xap/1.0/""#),
+            "{on_disk}"
+        );
+        assert!(
+            on_disk.contains(r#"xmlns:dc="http://purl.org/dc/elements/1.1/""#),
+            "{on_disk}"
+        );
         assert_eq!(read_labels(&image).rating, 1);
     }
 
     #[test]
     fn a_sidecar_it_cannot_edit_is_left_unchanged() {
-        let dir   = TempDir::new("noedit");
+        let dir = TempDir::new("noedit");
         let image = dir.0.join("photo.jpg");
-        let xmp   = dir.0.join("photo.jpg.xmp");
+        let xmp = dir.0.join("photo.jpg.xmp");
         std::fs::write(&xmp, "not xmp at all").unwrap();
 
-        let err = write_labels(&image, &ImageLabels { rating: 4, colour: ColourLabel::None });
+        let err = write_labels(
+            &image,
+            &ImageLabels {
+                rating: 4,
+                colour: ColourLabel::None,
+            },
+        );
 
         assert!(err.is_err());
         assert_eq!(std::fs::read_to_string(&xmp).unwrap(), "not xmp at all");
@@ -384,20 +480,37 @@ mod tests {
 
     #[test]
     fn element_syntax_is_edited_in_place() {
-        let dir   = TempDir::new("element");
+        let dir = TempDir::new("element");
         let image = dir.0.join("photo.jpg");
-        let xmp   = dir.0.join("photo.jpg.xmp");
-        let text  = "<rdf:Description><xmp:Rating>1</xmp:Rating><dc:title>x</dc:title></rdf:Description>";
+        let xmp = dir.0.join("photo.jpg.xmp");
+        let text =
+            "<rdf:Description><xmp:Rating>1</xmp:Rating><dc:title>x</dc:title></rdf:Description>";
         std::fs::write(&xmp, text).unwrap();
 
-        write_labels(&image, &ImageLabels { rating: 4, colour: ColourLabel::None }).unwrap();
+        write_labels(
+            &image,
+            &ImageLabels {
+                rating: 4,
+                colour: ColourLabel::None,
+            },
+        )
+        .unwrap();
 
-        assert_eq!(std::fs::read_to_string(&xmp).unwrap(), text.replace(">1<", ">4<"));
+        assert_eq!(
+            std::fs::read_to_string(&xmp).unwrap(),
+            text.replace(">1<", ">4<")
+        );
     }
 
     #[test]
     fn element_values_parse() {
         let text = "<xmp:Rating>2</xmp:Rating><xmp:Label>Blue</xmp:Label>";
-        assert_eq!(parse_xmp(text), ImageLabels { rating: 2, colour: ColourLabel::Blue });
+        assert_eq!(
+            parse_xmp(text),
+            ImageLabels {
+                rating: 2,
+                colour: ColourLabel::Blue
+            }
+        );
     }
 }

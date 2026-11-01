@@ -18,7 +18,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// One animation frame — straight RGBA8, row-major.
 #[derive(Clone, Debug)]
 pub struct Frame {
-    pub pixels:   Vec<u8>,
+    pub pixels: Vec<u8>,
     /// Frame duration in milliseconds. 0 for non-animated formats.
     pub delay_ms: u32,
 }
@@ -27,25 +27,35 @@ pub struct Frame {
 #[derive(Clone, Debug)]
 pub struct DecodedImage {
     pub frames: Vec<Frame>,
-    pub width:  u32,
+    pub width: u32,
     pub height: u32,
 }
 
 impl DecodedImage {
     #[allow(dead_code)] // useful API — will be needed for animation-aware export
-    pub fn is_animated(&self) -> bool { self.frames.len() > 1 }
+    pub fn is_animated(&self) -> bool {
+        self.frames.len() > 1
+    }
 
     /// Return the frame at `idx`. Always valid — callers use modulo arithmetic.
     pub fn frame(&self, idx: usize) -> &Frame {
         debug_assert!(
             idx < self.frames.len(),
-            "frame index {idx} out of range ({})", self.frames.len()
+            "frame index {idx} out of range ({})",
+            self.frames.len()
         );
         &self.frames[idx]
     }
 
     fn single(pixels: Vec<u8>, width: u32, height: u32) -> Self {
-        Self { frames: vec![Frame { pixels, delay_ms: 0 }], width, height }
+        Self {
+            frames: vec![Frame {
+                pixels,
+                delay_ms: 0,
+            }],
+            width,
+            height,
+        }
     }
 }
 
@@ -68,32 +78,19 @@ pub const SUPPORTED_EXTENSIONS: &[&str] = &[
     // Standard raster
     "bmp", "png", "jpg", "jpeg", "gif", "webp", "tiff", "tif", "ico", "jxl",
     // RAW formats — Canon
-    "cr2", "cr3",
-    // RAW formats — Nikon
-    "nef", "nrw",
-    // RAW formats — Sony
-    "arw", "srf", "sr2",
-    // RAW formats — Fujifilm
-    "raf",
-    // RAW formats — Olympus / OM Digital
-    "orf",
-    // RAW formats — Adobe universal / DNG-based devices
-    "dng",
-    // RAW formats — Pentax
-    "pef", "ptx",
-    // RAW formats — Panasonic
-    "rw2",
-    // RAW formats — Hasselblad
-    "3fr", "fff",
-    // RAW formats — Leaf / Phase One
-    "mos",
-    // RAW formats — Sigma
-    "x3f",
-    // RAW formats — Samsung
-    "srw",
-    // RAW formats — Mamiya
-    "mef",
-    // RAW formats — Leica
+    "cr2", "cr3", // RAW formats — Nikon
+    "nef", "nrw", // RAW formats — Sony
+    "arw", "srf", "sr2", // RAW formats — Fujifilm
+    "raf", // RAW formats — Olympus / OM Digital
+    "orf", // RAW formats — Adobe universal / DNG-based devices
+    "dng", // RAW formats — Pentax
+    "pef", "ptx", // RAW formats — Panasonic
+    "rw2", // RAW formats — Hasselblad
+    "3fr", "fff", // RAW formats — Leaf / Phase One
+    "mos", // RAW formats — Sigma
+    "x3f", // RAW formats — Samsung
+    "srw", // RAW formats — Mamiya
+    "mef", // RAW formats — Leica
     "rwl",
 ];
 
@@ -106,9 +103,28 @@ pub fn is_supported(path: &Path) -> bool {
 
 /// Returns `true` when `ext` (lowercase) is a RAW camera format.
 pub fn is_raw_ext(ext: &str) -> bool {
-    matches!(ext,
-        "cr2"|"cr3"|"nef"|"nrw"|"arw"|"srf"|"sr2"|"raf"|"orf"|"dng"|
-        "pef"|"ptx"|"rw2"|"3fr"|"fff"|"mos"|"x3f"|"srw"|"mef"|"rwl"
+    matches!(
+        ext,
+        "cr2"
+            | "cr3"
+            | "nef"
+            | "nrw"
+            | "arw"
+            | "srf"
+            | "sr2"
+            | "raf"
+            | "orf"
+            | "dng"
+            | "pef"
+            | "ptx"
+            | "rw2"
+            | "3fr"
+            | "fff"
+            | "mos"
+            | "x3f"
+            | "srw"
+            | "mef"
+            | "rwl"
     )
 }
 
@@ -127,7 +143,7 @@ pub fn load_image(path: &Path) -> LoadOutcome {
     if is_raw_ext(&ext) {
         return match decode_raw(path) {
             Ok(img) => LoadOutcome::Ok(img),
-            Err(e)  => LoadOutcome::Unsupported(format!("RAW decode failed: {e}")),
+            Err(e) => LoadOutcome::Unsupported(format!("RAW decode failed: {e}")),
         };
     }
 
@@ -140,12 +156,16 @@ pub fn load_image(path: &Path) -> LoadOutcome {
         Some(actual) if actual != ext => {
             match decode_by_ext(&actual, path, DecodeStrategy::ByContent) {
                 Ok(img) => LoadOutcome::WrongExtension(img, actual),
-                Err(e)  => LoadOutcome::Unsupported(e.to_string()),
+                Err(e) => LoadOutcome::Unsupported(e.to_string()),
             }
         }
         Some(_) => {
             // Sniffed the same extension but still failed — corrupt / truncated.
-            let desc = if ext.is_empty() { "file".into() } else { format!(".{ext} file") };
+            let desc = if ext.is_empty() {
+                "file".into()
+            } else {
+                format!(".{ext} file")
+            };
             LoadOutcome::Unsupported(format!("Failed to decode {desc}"))
         }
         None => {
@@ -153,7 +173,7 @@ pub fn load_image(path: &Path) -> LoadOutcome {
             // Some RAW files arrive with generic/wrong extensions (.raw, .bin etc.)
             match decode_raw(path) {
                 Ok(img) => LoadOutcome::Ok(img),
-                Err(_)  => LoadOutcome::Unsupported("Not a recognised image format".into()),
+                Err(_) => LoadOutcome::Unsupported("Not a recognised image format".into()),
             }
         }
     }
@@ -169,13 +189,20 @@ fn file_ext(path: &Path) -> String {
 }
 
 #[derive(Clone, Copy)]
-enum DecodeStrategy { ByExtension, ByContent }
+enum DecodeStrategy {
+    ByExtension,
+    ByContent,
+}
 
-fn decode_by_ext(ext: &str, path: &Path, strategy: DecodeStrategy) -> Result<DecodedImage, BoxError> {
+fn decode_by_ext(
+    ext: &str,
+    path: &Path,
+    strategy: DecodeStrategy,
+) -> Result<DecodedImage, BoxError> {
     match ext {
         "jxl" => decode_jxl(path),
         "gif" => decode_gif(path),
-        _     => decode_raster(path, strategy),
+        _ => decode_raster(path, strategy),
     }
 }
 
@@ -192,34 +219,52 @@ const JXL_CONTAINER_MAGIC: [u8; 12] = [
 /// RAW formats are NOT listed here — they have no reliable single signature.
 fn magic_to_format(buf: &[u8]) -> Option<image::ImageFormat> {
     use image::ImageFormat;
-    if buf.starts_with(&[0xFF, 0xD8])                 { return Some(ImageFormat::Jpeg); }
-    if buf.starts_with(&[0x89, 0x50, 0x4E, 0x47])     { return Some(ImageFormat::Png);  }
-    if buf.starts_with(&[0x42, 0x4D])                  { return Some(ImageFormat::Bmp);  }
-    if buf.starts_with(b"GIF8")                        { return Some(ImageFormat::Gif);  }
-    if buf.starts_with(&[0x49, 0x49, 0x2A, 0x00])
-       || buf.starts_with(&[0x4D, 0x4D, 0x00, 0x2A]) { return Some(ImageFormat::Tiff); }
-    if buf.starts_with(&[0x00, 0x00, 0x01, 0x00])      { return Some(ImageFormat::Ico);  }
-    if buf.len() >= 12 && buf.starts_with(b"RIFF")
-       && &buf[8..12] == b"WEBP"                       { return Some(ImageFormat::WebP); }
+    if buf.starts_with(&[0xFF, 0xD8]) {
+        return Some(ImageFormat::Jpeg);
+    }
+    if buf.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        return Some(ImageFormat::Png);
+    }
+    if buf.starts_with(&[0x42, 0x4D]) {
+        return Some(ImageFormat::Bmp);
+    }
+    if buf.starts_with(b"GIF8") {
+        return Some(ImageFormat::Gif);
+    }
+    if buf.starts_with(&[0x49, 0x49, 0x2A, 0x00]) || buf.starts_with(&[0x4D, 0x4D, 0x00, 0x2A]) {
+        return Some(ImageFormat::Tiff);
+    }
+    if buf.starts_with(&[0x00, 0x00, 0x01, 0x00]) {
+        return Some(ImageFormat::Ico);
+    }
+    if buf.len() >= 12 && buf.starts_with(b"RIFF") && &buf[8..12] == b"WEBP" {
+        return Some(ImageFormat::WebP);
+    }
     None
 }
 
 fn format_to_ext(fmt: image::ImageFormat) -> Option<&'static str> {
     use image::ImageFormat;
     match fmt {
-        ImageFormat::Png  => Some("png"),  ImageFormat::Jpeg => Some("jpg"),
-        ImageFormat::Bmp  => Some("bmp"),  ImageFormat::Gif  => Some("gif"),
-        ImageFormat::WebP => Some("webp"), ImageFormat::Tiff => Some("tiff"),
-        ImageFormat::Ico  => Some("ico"),  _                 => None,
+        ImageFormat::Png => Some("png"),
+        ImageFormat::Jpeg => Some("jpg"),
+        ImageFormat::Bmp => Some("bmp"),
+        ImageFormat::Gif => Some("gif"),
+        ImageFormat::WebP => Some("webp"),
+        ImageFormat::Tiff => Some("tiff"),
+        ImageFormat::Ico => Some("ico"),
+        _ => None,
     }
 }
 
 fn sniff_format(path: &Path) -> Option<String> {
     use std::io::Read;
     let mut buf = [0u8; 32];
-    let n   = std::fs::File::open(path).ok()?.read(&mut buf).ok()?;
+    let n = std::fs::File::open(path).ok()?.read(&mut buf).ok()?;
     let buf = &buf[..n];
-    if let Some(ext) = magic_to_format(buf).and_then(format_to_ext) { return Some(ext.to_owned()); }
+    if let Some(ext) = magic_to_format(buf).and_then(format_to_ext) {
+        return Some(ext.to_owned());
+    }
     if buf.starts_with(&JXL_CODESTREAM_MAGIC) || buf.starts_with(&JXL_CONTAINER_MAGIC) {
         return Some("jxl".to_owned());
     }
@@ -257,17 +302,17 @@ fn decode_raster(path: &Path, strategy: DecodeStrategy) -> Result<DecodedImage, 
     // the stored pixels must be turned, and Patina saves rotations there.
     let mut decoder = reader.into_decoder()?;
     let orientation = decoder.orientation()?;
-    let mut img     = image::DynamicImage::from_decoder(decoder)?;
+    let mut img = image::DynamicImage::from_decoder(decoder)?;
     img.apply_orientation(orientation);
-    let rgba   = img.into_rgba8();
+    let rgba = img.into_rgba8();
     let (w, h) = rgba.dimensions();
     Ok(DecodedImage::single(rgba.into_raw(), w, h))
 }
 
 fn decode_gif(path: &Path) -> Result<DecodedImage, BoxError> {
-    use image::{AnimationDecoder, ImageDecoder};
     use image::codecs::gif::GifDecoder;
-    let file    = std::fs::File::open(path)?;
+    use image::{AnimationDecoder, ImageDecoder};
+    let file = std::fs::File::open(path)?;
     let decoder = GifDecoder::new(std::io::BufReader::new(file))?;
     let (width, height) = decoder.dimensions();
     let frames: Vec<Frame> = decoder
@@ -276,25 +321,34 @@ fn decode_gif(path: &Path) -> Result<DecodedImage, BoxError> {
         .map(|f| {
             let (n, d) = f.delay().numer_denom_ms();
             let delay_ms = if d == 0 { 100 } else { (n / d).max(20) };
-            Frame { pixels: f.into_buffer().into_raw(), delay_ms }
+            Frame {
+                pixels: f.into_buffer().into_raw(),
+                delay_ms,
+            }
         })
         .collect();
-    if frames.is_empty() { return Err("GIF has no decodable frames".into()); }
-    Ok(DecodedImage { frames, width, height })
+    if frames.is_empty() {
+        return Err("GIF has no decodable frames".into());
+    }
+    Ok(DecodedImage {
+        frames,
+        width,
+        height,
+    })
 }
 
 fn decode_jxl(path: &Path) -> Result<DecodedImage, BoxError> {
     use jxl_oxide::JxlImage;
-    let file      = std::fs::File::open(path)?;
+    let file = std::fs::File::open(path)?;
     let mut image = JxlImage::builder().read(std::io::BufReader::new(file))?;
     image.request_color_encoding(jxl_oxide::EnumColourEncoding::srgb(
         jxl_oxide::RenderingIntent::Relative,
     ));
-    let render     = image.render_frame(0)?;
+    let render = image.render_frame(0)?;
     let mut stream = render.stream();
-    let width      = stream.width()    as usize;
-    let height     = stream.height()   as usize;
-    let channels   = stream.channels() as usize;
+    let width = stream.width() as usize;
+    let height = stream.height() as usize;
+    let channels = stream.channels() as usize;
     const MAX_DIM: usize = 32_768;
     if width > MAX_DIM || height > MAX_DIM {
         return Err(format!("JXL too large ({width}×{height}); max {MAX_DIM}").into());
@@ -302,7 +356,11 @@ fn decode_jxl(path: &Path) -> Result<DecodedImage, BoxError> {
     let pixel_count = width.checked_mul(height).ok_or("JXL dimensions overflow")?;
     let mut samples = vec![0f32; pixel_count * channels];
     stream.write_to_buffer(&mut samples);
-    Ok(DecodedImage::single(jxl_samples_to_rgba8(&samples, pixel_count, channels), width as u32, height as u32))
+    Ok(DecodedImage::single(
+        jxl_samples_to_rgba8(&samples, pixel_count, channels),
+        width as u32,
+        height as u32,
+    ))
 }
 
 /// Decode any supported RAW camera file to RGBA8 via rawler.
@@ -314,7 +372,7 @@ fn decode_raw(path: &Path) -> Result<DecodedImage, BoxError> {
     use rawler::RawFile;
 
     // RawFile::new takes a path and a reader
-    let file     = std::fs::File::open(path)?;
+    let file = std::fs::File::open(path)?;
     let bufreader = std::io::BufReader::new(file);
     let mut raw_file = RawFile::new(path, bufreader);
 
@@ -322,10 +380,11 @@ fn decode_raw(path: &Path) -> Result<DecodedImage, BoxError> {
         .map_err(|e| format!("RAW: no decoder for {}: {e:?}", path.display()))?;
 
     // full_image(file) → Result<Option<DynamicImage>>
-    let img_opt = decoder.full_image(&mut raw_file)
+    let img_opt = decoder
+        .full_image(&mut raw_file)
         .map_err(|e| format!("RAW: decode failed: {e:?}"))?;
 
-    let img  = img_opt.ok_or("RAW: decoder returned no image")?;
+    let img = img_opt.ok_or("RAW: decoder returned no image")?;
     let rgba = img.into_rgba8();
     let (w, h) = rgba.dimensions();
     Ok(DecodedImage::single(rgba.into_raw(), w, h))
@@ -333,7 +392,9 @@ fn decode_raw(path: &Path) -> Result<DecodedImage, BoxError> {
 
 // ── JXL helpers ───────────────────────────────────────────────────────────────
 
-fn f32_to_u8(v: f32) -> u8 { (v.clamp(0.0, 1.0) * 255.0).round() as u8 }
+fn f32_to_u8(v: f32) -> u8 {
+    (v.clamp(0.0, 1.0) * 255.0).round() as u8
+}
 
 fn jxl_samples_to_rgba8(samples: &[f32], pixel_count: usize, channels: usize) -> Vec<u8> {
     let mut rgba = vec![0u8; pixel_count * 4];
@@ -346,8 +407,10 @@ fn jxl_samples_to_rgba8(samples: &[f32], pixel_count: usize, channels: usize) ->
             3 => (s[0], s[1], s[2], 1.0),
             _ => (s[0], s[1], s[2], s[3]),
         };
-        d[0] = f32_to_u8(r); d[1] = f32_to_u8(g);
-        d[2] = f32_to_u8(b); d[3] = f32_to_u8(a);
+        d[0] = f32_to_u8(r);
+        d[1] = f32_to_u8(g);
+        d[2] = f32_to_u8(b);
+        d[3] = f32_to_u8(a);
     }
     rgba
 }

@@ -6,7 +6,7 @@ description: Verify a change before reporting it — build, clippy warning count
 # Verifying a change
 
 **Report the numbers, not an impression.** One line at the end: build exit, clippy warnings/errors, tests
-passed/failed, fmt diff count.
+passed/failed, fmt exit.
 
 There is no CI yet. When `.github/workflows/ci.yml` lands it runs this same recipe, and the two change together.
 
@@ -54,12 +54,11 @@ Select-String -Path "$env:TEMP\pt-test.txt" -Pattern '^test result:'
 
 Sum the `test result:` lines — there is one per test binary.
 
-## 4. Formatter (report only, for now)
+## 4. Formatter (a gate)
 
 ```powershell
 cargo fmt --check *> "$env:TEMP\pt-fmt.txt"; "exit=$LASTEXITCODE"; (Select-String -Path "$env:TEMP\pt-fmt.txt" -Pattern '^Diff in').Count
 ```
 
-Not a gate yet: the code is hand-aligned in columns, which default rustfmt rewrites. Whether to adopt rustfmt is
-an open decision in `docs/settled-decisions.md`. Report the count; do not run `cargo fmt` unprompted, since it
-rewrites most files.
+Default rustfmt, adopted 2026-11-01 (`docs/settled-decisions.md`). A non-zero exit fails verification: run
+`cargo fmt` and include the result in the same commit.

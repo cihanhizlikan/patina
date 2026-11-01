@@ -103,6 +103,12 @@ returns the clicked `ModalAction`; `draw_ui` applies it. Borrow-checker friction
 Should Windows ever force an FFI call (as `StrCmpLogicalW` did for Devoid Viewer), it goes in one module, `forbid`
 becomes `deny` with that module's `allow`, and this entry is revised in the same commit.
 
+## Default rustfmt, gated (2026-11-01)
+Decided by the maintainer before the UI rework, which rewrites most of `ui.rs` and `main.rs`: one formatting-only
+commit first, so later diffs show only real changes. The hand-aligned columns went with it. `/verify` fails on a
+`cargo fmt --check` diff. The formatting commit is listed in `.git-blame-ignore-revs`
+(`git config blame.ignoreRevsFile .git-blame-ignore-revs`). Same choice as Devoid Viewer.
+
 ## Paths are used as given — no `canonicalize` (inherited)
 `std::fs::canonicalize` on Windows returns a verbatim `\\?\C:\…` path, which breaks paths handed over by
 archivers. **Build-enforced**: both `canonicalize` functions are banned in `clippy.toml`, and
@@ -159,9 +165,6 @@ which is where the `log!` macro's `eprintln!` lines go. **Whether the console is
 `winres` is a build-dependency and the module doc mentions `build.rs`, but there is no `build.rs`. Explorer and the
 installer show the default icon; only the window icon (`load_icon`) is set.
 
-## Formatting: hand-aligned columns or rustfmt
-The code is aligned by hand in columns. Default rustfmt would rewrite most files. Devoid Viewer adopted default
-rustfmt and gated it in CI.
 
 ## Sort order differs from Explorer
 `human_sort` lowercases and compares code points, so accented names sort after `z`. Devoid Viewer now uses

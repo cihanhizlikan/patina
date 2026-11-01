@@ -1,7 +1,8 @@
 # Patina — Roadmap
 
 The outstanding work, in the order it is being done (sorted 2026-11-01). Each item is its own branch and commit;
-when an item lands, its entry moves to [settled-decisions.md](settled-decisions.md) or is deleted here. The order
+when an item lands, it is marked done here and what it decided goes into
+[settled-decisions.md](settled-decisions.md). The order
 puts what later work builds on first: formatting before the large rewrites, the theme before the panel and the
 viewer that use it.
 
@@ -18,7 +19,7 @@ tiles. The viewer keeps its zero-chrome canvas. The editor rail is reorganised a
 
 ## Foundations
 
-1. **rustfmt.** Default rustfmt, one formatting-only commit, then a /verify gate. *Decided by the maintainer.*
+1. ~~**rustfmt.**~~ Done — see settled-decisions.md.
 2. **Logging.** The `log` facade (eframe, winit and wgpu already emit through it and their output is lost today)
    with Patina's own small logger: stderr plus a per-user file (`%LOCALAPPDATA%\Patina\patina.log`,
    `$XDG_STATE_HOME/patina/patina.log`), the previous run kept as `.1`. No console window in release builds.
