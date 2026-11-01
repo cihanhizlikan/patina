@@ -52,16 +52,13 @@ event loop (`src/loader.rs`).
 
 Found while writing the baseline (2026-11-01). Each is a candidate until measured; none is settled.
 
-## XMP ratings do not survive a restart — round-trip bug
-`build_xmp_packet` writes single-quoted attributes (`xmp:Rating='3'`), but `extract_attr` looks for
-`xmp:Rating="`. Unless a sidecar uses element syntax, Patina cannot read back what it wrote. **Bug, not a decision**;
-to be proven with a test and fixed.
-
 ## Writing a rating overwrites the whole sidecar
 `write_labels` replaces any existing `.xmp` with a two-field packet, and clearing the labels deletes the file. A
 sidecar made by Lightroom or darktable holds develop settings, keywords and more; touching a star throws them away.
-Recommendation: update only `xmp:Rating` and `xmp:Label` in place, and never delete a sidecar Patina did not
-create.
+Both callers in `src/main.rs` discard the write's error, so a failed save is silent. Recommendation: update only
+`xmp:Rating` and `xmp:Label` in place, never delete a sidecar Patina did not create, and surface write errors.
+(The read side could not even see Patina's own sidecars until `fix/xmp-roundtrip`: it only matched
+double-quoted attributes, and the writer emits single quotes.)
 
 ## "Lossless" JPEG save is a re-encode at quality 95
 `lossless_jpeg_transform` decodes, rotates the pixels and re-encodes at a fixed quality 95, overwriting the file in

@@ -110,11 +110,15 @@ fn find_xmp_value<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
     extract_attr(text, tag).or_else(|| extract_element(text, tag))
 }
 
+/// XML allows either quote around an attribute value; `build_xmp_packet`
+/// writes single quotes, Lightroom writes double.
 fn extract_attr<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
-    let needle = format!("{tag}=\"");
-    let start  = text.find(&needle)? + needle.len();
-    let end    = text[start..].find('"')? + start;
-    Some(&text[start..end])
+    ['"', '\''].into_iter().find_map(|quote| {
+        let needle = format!("{tag}={quote}");
+        let start  = text.find(&needle)? + needle.len();
+        let end    = text[start..].find(quote)? + start;
+        Some(&text[start..end])
+    })
 }
 
 fn extract_element<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
@@ -157,4 +161,70 @@ pub fn write_labels(image_path: &Path, labels: &ImageLabels) -> std::io::Result<
 
     let xmp_content = build_xmp_packet(labels.rating, labels.colour.xmp_name());
     std::fs::write(&xmp_path, xmp_content)
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh, empty directory under the system temp dir, removed on drop.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("patina-xmp-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
+    #[test]
+    fn labels_written_to_disk_are_read_back() {
+        let dir   = TempDir::new("roundtrip");
+        let image = dir.0.join("photo.jpg");
+        let labels = ImageLabels { rating: 4, colour: ColourLabel::Green };
+
+        write_labels(&image, &labels).unwrap();
+
+        assert!(dir.0.join("photo.jpg.xmp").is_file());
+        assert_eq!(read_labels(&image), labels);
+    }
+
+    #[test]
+    fn every_rating_and_label_round_trips() {
+        let dir   = TempDir::new("all");
+        let image = dir.0.join("a.png");
+        let colours = [ColourLabel::None, ColourLabel::Red, ColourLabel::Yellow,
+                       ColourLabel::Green, ColourLabel::Blue, ColourLabel::Purple];
+        for rating in 0..=5 {
+            for colour in colours {
+                let labels = ImageLabels { rating, colour };
+                write_labels(&image, &labels).unwrap();
+                assert_eq!(read_labels(&image), labels, "rating {rating}, {colour:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn attribute_values_parse_with_either_quote() {
+        let double = r#"<rdf:Description xmp:Rating="3" xmp:Label="Red"/>"#;
+        let single = r#"<rdf:Description xmp:Rating='3' xmp:Label='Red'/>"#;
+        let want = ImageLabels { rating: 3, colour: ColourLabel::Red };
+        assert_eq!(parse_xmp(double), want);
+        assert_eq!(parse_xmp(single), want);
+    }
+
+    #[test]
+    fn element_values_parse() {
+        let text = "<xmp:Rating>2</xmp:Rating><xmp:Label>Blue</xmp:Label>";
+        assert_eq!(parse_xmp(text), ImageLabels { rating: 2, colour: ColourLabel::Blue });
+    }
 }
