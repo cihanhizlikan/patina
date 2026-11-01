@@ -947,10 +947,12 @@ impl App {
         self.ensure_editor_caches(ctx);
 
         // Modals overlay everything — render before panels.
-        let icons_ptr = self.icon_cache.as_ref().map(|ic| ic as *const ui::Icons);
-        // SAFETY: icon_cache is never mutated inside draw_modal or draw_save_as_modal.
-        let icons_ref = icons_ptr.map(|p| unsafe { &*p });
-        draw_modal(ctx, self, icons_ref);
+        let clicked = self.modal.as_ref()
+            .and_then(|modal| draw_modal(ctx, modal, self.icon_cache.as_ref()));
+        if let Some(action) = clicked {
+            apply_modal_action(self, action);
+            self.modal = None;
+        }
         draw_save_as_modal(ctx, self);
         if self.show_help { draw_help_modal(ctx, self.in_editor(), &mut self.show_help); }
 
@@ -1726,8 +1728,10 @@ fn format_btn(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
 
 // ── Main modal ────────────────────────────────────────────────────────────────
 
-fn draw_modal(ctx: &egui::Context, app: &mut App, icons: Option<&ui::Icons>) {
-    let Some(ref modal) = app.modal else { return };
+/// Draw `modal` and return the button the user clicked, if any. It only reads;
+/// the caller applies the action with `&mut App`, so nothing here borrows the
+/// app while `icons` (which lives in it) is borrowed too.
+fn draw_modal(ctx: &egui::Context, modal: &ModalDialog, icons: Option<&ui::Icons>) -> Option<ModalAction> {
     use ui::{BG, BORDER, DANGER, DIM, TEXT};
 
     // Dim overlay at Order::Background so the Window (Order::Middle) renders above it.
@@ -1735,7 +1739,6 @@ fn draw_modal(ctx: &egui::Context, app: &mut App, icons: Option<&ui::Icons>) {
     ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("modal_dim")))
         .rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(160));
 
-    let mut close  = false;
     let mut action: Option<ModalAction> = None;
 
     egui::Window::new("modal")
@@ -1764,9 +1767,9 @@ fn draw_modal(ctx: &egui::Context, app: &mut App, icons: Option<&ui::Icons>) {
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new("Your edits will be lost if you don't save.").color(DIM).size(13.0));
                     btn_row(ui, &mut |ui| {
-                        if modal_btn(ui, "Save",    icons.map(|ic| &ic.save), ModalBtnKind::Primary).clicked() { action = Some(ModalAction::Save);    close = true; }
-                        if modal_btn(ui, "Discard", None,                      ModalBtnKind::Default).clicked() { action = Some(ModalAction::Discard); close = true; }
-                        if modal_btn(ui, "Cancel",  None,                      ModalBtnKind::Default).clicked() { close = true; }
+                        if modal_btn(ui, "Save",    icons.map(|ic| &ic.save), ModalBtnKind::Primary).clicked() { action = Some(ModalAction::Save);    }
+                        if modal_btn(ui, "Discard", None,                      ModalBtnKind::Default).clicked() { action = Some(ModalAction::Discard); }
+                        if modal_btn(ui, "Cancel",  None,                      ModalBtnKind::Default).clicked() { action = Some(ModalAction::Dismiss); }
                     });
                 }
                 ModalDialog::ConfirmDelete { filename } => {
@@ -1776,8 +1779,8 @@ fn draw_modal(ctx: &egui::Context, app: &mut App, icons: Option<&ui::Icons>) {
                         format!("Permanently delete\n\n{filename}?\n\nThis cannot be undone.")
                     ).color(DIM).size(13.0));
                     btn_row(ui, &mut |ui| {
-                        if modal_btn(ui, "Delete", icons.map(|ic| &ic.reset), ModalBtnKind::Danger).clicked() { action = Some(ModalAction::Delete); close = true; }
-                        if modal_btn(ui, "Cancel", None,                       ModalBtnKind::Default).clicked() { close = true; }
+                        if modal_btn(ui, "Delete", icons.map(|ic| &ic.reset), ModalBtnKind::Danger).clicked() { action = Some(ModalAction::Delete); }
+                        if modal_btn(ui, "Cancel", None,                       ModalBtnKind::Default).clicked() { action = Some(ModalAction::Dismiss); }
                     });
                 }
                 ModalDialog::OfferRename { old_ext, new_ext, new_path, .. } => {
@@ -1788,8 +1791,8 @@ fn draw_modal(ctx: &egui::Context, app: &mut App, icons: Option<&ui::Icons>) {
                         new_path.file_name().unwrap_or_default().to_string_lossy()
                     )).color(DIM).size(13.0));
                     btn_row(ui, &mut |ui| {
-                        if modal_btn(ui, "Rename", icons.map(|ic| &ic.save), ModalBtnKind::Primary).clicked() { action = Some(ModalAction::Rename); close = true; }
-                        if modal_btn(ui, "Keep",   None,                      ModalBtnKind::Default).clicked() { close = true; }
+                        if modal_btn(ui, "Rename", icons.map(|ic| &ic.save), ModalBtnKind::Primary).clicked() { action = Some(ModalAction::Rename); }
+                        if modal_btn(ui, "Keep",   None,                      ModalBtnKind::Default).clicked() { action = Some(ModalAction::Dismiss); }
                     });
                 }
                 ModalDialog::Error { message } => {
@@ -1797,23 +1800,24 @@ fn draw_modal(ctx: &egui::Context, app: &mut App, icons: Option<&ui::Icons>) {
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new(message.as_str()).color(TEXT).size(13.0));
                     btn_row(ui, &mut |ui| {
-                        if modal_btn(ui, "OK", None, ModalBtnKind::Default).clicked() { close = true; }
+                        if modal_btn(ui, "OK", None, ModalBtnKind::Default).clicked() { action = Some(ModalAction::Dismiss); }
                     });
                 }
             }
         });
 
-    if close {
-        if let Some(a) = action { apply_modal_action(app, a); }
-        app.modal = None;
-    }
+    action
 }
 
 /// Type-safe modal action — replaces the stringly-typed `&str` approach.
-enum ModalAction { Save, Discard, Delete, Rename }
+/// `Dismiss` is Cancel, Keep or OK: close without doing anything.
+enum ModalAction { Save, Discard, Delete, Rename, Dismiss }
 
+/// Apply a clicked modal button. Reads `app.modal`, so the caller clears it
+/// afterwards.
 fn apply_modal_action(app: &mut App, action: ModalAction) {
     match action {
+        ModalAction::Dismiss => {}
         ModalAction::Save => {
             if let Some(ModalDialog::SaveOnExit { save_and_quit }) = &app.modal {
                 app.pending_save_and_exit = Some(*save_and_quit);

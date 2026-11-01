@@ -41,7 +41,7 @@ loader, navigator and path rules.
 Carried over from the maintainer's other projects:
 - **Safe Rust.** Maintainer: *"If we're writing unmanaged code why are we writing code in Rust in the first
   place."* Before writing FFI, look for a maintained crate with a safe API. `unsafe` written to get past the borrow
-  checker is a design problem to restructure, never a fix.
+  checker is a design problem to restructure, never a fix. `unsafe_code = "forbid"` makes it a build error.
 - **Evidence, not reasoning.** A fix is finished when it is measured, not when the code looks right. A hypothesis
   built from reading code is a candidate, never a conclusion. A measured "nothing to do" is a deliverable.
 - **Take a position and argue it.** An open question wants a recommendation and what would change it, not a menu.

@@ -38,6 +38,14 @@ go through a temporary file and a rename, so a crash cannot truncate a sidecar. 
 read-modify-write through a DOM would reformat the whole file, which is the damage this rule exists to prevent;
 on-disk tests in `src/xmp.rs` hold the byte-for-byte guarantee.
 
+## No `unsafe`, build-enforced (2026-11-01)
+`unsafe_code = "forbid"` in `Cargo.toml`: no `#[allow]` can re-open it. The one `unsafe` block there was cast
+`&self.icon_cache` to a raw pointer so `draw_modal` could take `&mut App` beside it — a shared reference aliasing a
+live `&mut`, undefined behaviour whatever the callee did. `draw_modal` now only reads the dialog and icons and
+returns the clicked `ModalAction`; `draw_ui` applies it. Borrow-checker friction is answered by restructuring.
+Should Windows ever force an FFI call (as `StrCmpLogicalW` did for Devoid Viewer), it goes in one module, `forbid`
+becomes `deny` with that module's `allow`, and this entry is revised in the same commit.
+
 ## Paths are used as given — no `canonicalize` (inherited)
 `std::fs::canonicalize` on Windows returns a verbatim `\\?\C:\…` path, which breaks paths handed over by
 archivers. **Build-enforced**: both `canonicalize` functions are banned in `clippy.toml`, and
@@ -76,11 +84,6 @@ name, and carry the metadata across either way.
 `execute_delete` calls `std::fs::remove_file`: no Recycle Bin, no undo, and errors are discarded. Devoid Viewer
 moved to the `trash` crate for the same reason (Devoid's settled decision of 2026-10-31).
 
-## `unsafe` that silences the borrow checker
-`App::draw_ui` turns `&self.icon_cache` into a raw pointer and dereferences it while `draw_modal` also receives
-`&mut App` — a shared reference aliasing a live `&mut`, which is undefined behaviour whatever `draw_modal` does.
-Recommendation: restructure so no `unsafe` is needed, then set `unsafe_code = "forbid"`.
-
 ## The Windows build opens a console window
 There is no `#![windows_subsystem = "windows"]`, so every launch on Windows shows a console beside the window,
 which is where the `log!` macro's `eprintln!` lines go. **Whether the console is wanted was not recorded.**
@@ -95,5 +98,5 @@ rustfmt and gated it in CI.
 
 ## Sort order differs from Explorer
 `human_sort` lowercases and compares code points, so accented names sort after `z`. Devoid Viewer now uses
-`StrCmpLogicalW` on Windows; Patina has no `unsafe` module to put that call in, so this one waits on the
-`unsafe` decision above.
+`StrCmpLogicalW` on Windows, which is FFI. Patina forbids `unsafe`, so matching Explorer means either a
+maintained crate that wraps the call safely or a deliberate exception under the `unsafe` decision above.

@@ -54,6 +54,11 @@ mozjpeg = { version = "0.10", default-features = false, features = ["with_simd"]
 [lints.clippy]
 disallowed_methods = "deny"
 
+# Safe Rust only. `forbid`, not `deny`: no `#[allow]` can re-open it, so
+# adding `unsafe` means changing this line and docs/settled-decisions.md.
+[lints.rust]
+unsafe_code = "forbid"
+
 [build-dependencies]
 # winres kept for Windows icon embedding — platform-specific but harmless on others
 winres = "0.1"
