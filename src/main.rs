@@ -27,6 +27,7 @@ macro_rules! log {
 
 mod editor;
 mod exif;
+mod keymap;
 mod loader;
 mod logging;
 mod nav;
@@ -277,12 +278,23 @@ enum OpenMode {
     Navigate,
 }
 
-/// Which guide overlay to draw on the canvas.
+/// The guide overlay on the editor canvas; G steps through them in order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-enum GuideType {
+enum Guides {
     #[default]
-    RuleOfThirds,
-    GoldenRatio,
+    Off,
+    Thirds,
+    Golden,
+}
+
+impl Guides {
+    fn next(self) -> Self {
+        match self {
+            Guides::Off => Guides::Thirds,
+            Guides::Thirds => Guides::Golden,
+            Guides::Golden => Guides::Off,
+        }
+    }
 }
 
 struct App {
@@ -323,10 +335,9 @@ struct App {
     zoom: f32,
     /// Pan offset in logical pixels from the centred position.
     pan: egui::Vec2,
-    /// Whether the guide overlay is currently visible.
-    show_guides: bool,
-    /// Which guide type is active when guides are shown.
-    guide_type: GuideType,
+    guides: Guides,
+    /// The window title last sent, so it is sent only when it changes.
+    title: String,
 
     // ── Metadata ──────────────────────────────────────────────────────────────
     /// Cached EXIF/IPTC metadata for the current image.
@@ -386,8 +397,8 @@ impl App {
             slideshow_next_at: None,
             zoom: 1.0,
             pan: egui::Vec2::ZERO,
-            show_guides: false,
-            guide_type: GuideType::default(),
+            guides: Guides::Off,
+            title: String::new(),
             metadata: None,
             labels: ImageLabels::default(),
             editor_state: None,
@@ -522,10 +533,11 @@ impl App {
     }
 
     fn preload_neighbour(&mut self, forward: bool, ctx: &egui::Context) {
+        // Peek: next() and prev() move the navigator's position.
         let target = if forward {
-            self.navigator.next()
+            self.navigator.peek_next()
         } else {
-            self.navigator.prev()
+            self.navigator.peek_prev()
         };
         let Some(p) = target else { return };
         if self.preload_cache.contains_key(&p) {
@@ -890,7 +902,7 @@ impl App {
 
         if action.save {
             log!("[action] Save");
-            self.save_inplace(ctx);
+            self.save_inplace();
             return;
         }
         if action.save_as {
@@ -972,7 +984,7 @@ impl App {
 
     /// Returns whether the file now holds the edits; a failure is reported
     /// through `pending_error`.
-    fn save_inplace(&mut self, ctx: &egui::Context) -> bool {
+    fn save_inplace(&mut self) -> bool {
         let Some(path) = self.current_path.clone() else {
             return false;
         };
@@ -1011,7 +1023,6 @@ impl App {
         // just saved would be applied to the pre-save pixels and lost.
         self.current_image = Some(display);
         self.image_gen += 1;
-        update_title(ctx, self.current_filename().as_deref());
         self.reset_editor_after_save();
         true
     }
@@ -1049,13 +1060,7 @@ impl App {
         }
     }
 
-    fn commit_save_as(
-        &mut self,
-        ctx: &egui::Context,
-        dest: PathBuf,
-        quality: u8,
-        max_dim: Option<u32>,
-    ) {
+    fn commit_save_as(&mut self, dest: PathBuf, quality: u8, max_dim: Option<u32>) {
         let Some(es) = &self.editor_state else { return };
         let display = es.display.clone();
         let meta = self
@@ -1070,7 +1075,6 @@ impl App {
         self.current_path = Some(dest.clone());
         self.current_image = Some(display);
         self.navigator.set_current(dest);
-        update_title(ctx, self.current_filename().as_deref());
         self.image_gen += 1;
         self.reset_editor_after_save();
     }
@@ -1141,6 +1145,7 @@ impl eframe::App for App {
         self.upload_current_frame(ctx, frame);
         self.draw_ui(ctx);
         self.process_keyboard(ctx);
+        self.sync_title(ctx);
     }
 
     fn on_exit(&mut self) {
@@ -1166,7 +1171,7 @@ impl App {
         if let Some(quit_after) = self.pending_save_and_exit.take() {
             // A failed save keeps the editor, the edits and the window open;
             // its error dialog is next frame's modal.
-            if self.save_inplace(ctx) {
+            if self.save_inplace() {
                 self.do_exit_editor();
                 if quit_after {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1477,8 +1482,8 @@ impl App {
         .paint_at(ui, img_rect);
 
         // ── Guide overlays (editor mode only) ─────────────────────────────────
-        if self.in_editor() && self.show_guides {
-            draw_guides(ui, img_rect, self.guide_type);
+        if self.in_editor() {
+            draw_guides(ui, img_rect, self.guides);
         }
 
         // ── Pan (drag in editor mode) ──────────────────────────────────────────
@@ -1587,143 +1592,33 @@ impl App {
             return;
         }
 
-        let no = egui::Modifiers::NONE;
-        let ctrl = egui::Modifiers::COMMAND;
-        let cs = ctrl | egui::Modifiers::SHIFT;
-
-        macro_rules! key {
-            ($mods:expr, $k:expr) => {
-                ctx.input_mut(|i| consume_shortcut(i, $mods, $k))
-            };
+        // The mode is fixed for the frame, so E opening the editor does not
+        // also count as the editor's E.
+        let editor = self.in_editor();
+        for binding in keymap::KEYMAP.iter().filter(|b| b.mode.includes(editor)) {
+            for &(mods, key) in binding.keys {
+                if ctx.input_mut(|i| consume_shortcut(i, mods, key)) {
+                    self.run_action(binding.action, key, ctx);
+                }
+            }
         }
+    }
 
-        if self.in_editor() {
-            if key!(ctrl, egui::Key::Z) {
-                self.editor_undo();
-            }
-            if key!(cs, egui::Key::Z) {
-                self.editor_redo();
-            }
-            if key!(ctrl, egui::Key::Y) {
-                self.editor_redo();
-            }
-            if key!(ctrl, egui::Key::S) {
-                self.save_inplace(ctx);
-            }
-            if key!(cs, egui::Key::S) {
-                self.save_as_returning(ctx);
-            }
-            if key!(no, egui::Key::E) {
-                self.exit_editor(false);
-            }
-            if key!(no, egui::Key::Escape) {
-                self.exit_editor(false);
-            }
-            if key!(no, egui::Key::F) {
-                self.toggle_fullscreen(ctx);
-            }
-            if key!(no, egui::Key::F11) {
-                self.toggle_fullscreen(ctx);
-            }
-            if key!(no, egui::Key::H) {
-                self.show_help = !self.show_help;
-            }
-            if key!(no, egui::Key::Delete) {
-                self.delete_current();
-            }
-            if key!(no, egui::Key::G) {
-                self.show_guides = !self.show_guides;
-            }
-            if key!(no, egui::Key::Tab) {
-                // Cycle guide type when guides are visible
-                self.guide_type = match self.guide_type {
-                    GuideType::RuleOfThirds => GuideType::GoldenRatio,
-                    GuideType::GoldenRatio => GuideType::RuleOfThirds,
-                };
-            }
-            if key!(ctrl, egui::Key::Num0) || key!(ctrl, egui::Key::Space) {
-                // Reset zoom and pan
-                self.zoom = 1.0;
-                self.pan = egui::Vec2::ZERO;
-            }
-            if key!(no, egui::Key::Q) {
-                if self.exit_editor(true) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            }
-        } else {
-            if key!(no, egui::Key::ArrowRight) {
-                self.navigate(true, ctx);
-            }
-            if key!(no, egui::Key::ArrowDown) {
-                self.navigate(true, ctx);
-            }
-            if key!(no, egui::Key::PageDown) {
-                self.navigate(true, ctx);
-            }
-            if key!(no, egui::Key::ArrowLeft) {
-                self.navigate(false, ctx);
-            }
-            if key!(no, egui::Key::ArrowUp) {
-                self.navigate(false, ctx);
-            }
-            if key!(no, egui::Key::PageUp) {
-                self.navigate(false, ctx);
-            }
-            if key!(no, egui::Key::E) {
-                self.enter_editor(ctx);
-                if self.thumb_cache.is_none() {
-                    self.thumb_cache = Some(ThumbCache::new());
-                }
-            }
-            if key!(no, egui::Key::F) || key!(no, egui::Key::F11) {
-                // F/F11 in slideshow: exit slideshow (which also exits fullscreen).
-                // F/F11 outside slideshow: toggle fullscreen normally.
-                if self.slideshow_active {
-                    self.stop_slideshow(ctx);
-                } else {
-                    self.toggle_fullscreen(ctx);
-                }
-            }
-            if key!(no, egui::Key::Escape) {
-                // Stop slideshow (which also exits fullscreen via stop_slideshow).
-                // If not in slideshow but in fullscreen, exit fullscreen directly.
-                if self.slideshow_active {
-                    self.stop_slideshow(ctx);
-                } else if self.fullscreen {
-                    self.toggle_fullscreen(ctx);
-                }
-            }
-            if key!(no, egui::Key::S) {
-                self.toggle_slideshow(ctx);
-            }
-            if key!(no, egui::Key::H) {
-                self.show_help = !self.show_help;
-            }
-            if key!(no, egui::Key::Delete) {
-                self.delete_current();
-            }
-            // Star rating: 1-5 sets rating, 0 clears
-            for (key, rating) in [
-                (egui::Key::Num1, 1u8),
-                (egui::Key::Num2, 2),
-                (egui::Key::Num3, 3),
-                (egui::Key::Num4, 4),
-                (egui::Key::Num5, 5),
-                (egui::Key::Num0, 0),
-            ] {
-                if key!(no, key) {
-                    if let Some(path) = &self.current_path {
-                        self.labels.rating = rating;
-                        if let Err(e) = xmp::write_labels(path, &self.labels) {
-                            self.pending_error = Some(format!("Could not save the rating:\n{e}"));
-                            self.labels = xmp::read_labels(path);
-                        }
+    fn run_action(&mut self, action: keymap::Action, key: egui::Key, ctx: &egui::Context) {
+        use keymap::Action;
+        match action {
+            Action::Next => self.navigate(true, ctx),
+            Action::Prev => self.navigate(false, ctx),
+            Action::Rate => {
+                if let Some(path) = &self.current_path {
+                    self.labels.rating = keymap::digit(key);
+                    if let Err(e) = xmp::write_labels(path, &self.labels) {
+                        self.pending_error = Some(format!("Could not save the rating:\n{e}"));
+                        self.labels = xmp::read_labels(path);
                     }
                 }
             }
-            // Colour label: L cycles through colours
-            if key!(no, egui::Key::L) {
+            Action::CycleLabel => {
                 if let Some(path) = &self.current_path {
                     self.labels.colour = match self.labels.colour {
                         ColourLabel::None => ColourLabel::Red,
@@ -1739,10 +1634,82 @@ impl App {
                     }
                 }
             }
-            if key!(no, egui::Key::Q) {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            Action::EnterEditor => {
+                self.enter_editor(ctx);
+                if self.thumb_cache.is_none() {
+                    self.thumb_cache = Some(ThumbCache::new());
+                }
+            }
+            Action::LeaveEditor => {
+                self.exit_editor(false);
+            }
+            Action::Slideshow => self.toggle_slideshow(ctx),
+            Action::Back => {
+                // Stopping the slideshow also leaves fullscreen.
+                if self.slideshow_active {
+                    self.stop_slideshow(ctx);
+                } else if self.fullscreen {
+                    self.toggle_fullscreen(ctx);
+                }
+            }
+            Action::Fullscreen => {
+                if self.slideshow_active {
+                    self.stop_slideshow(ctx);
+                } else {
+                    self.toggle_fullscreen(ctx);
+                }
+            }
+            Action::Help => self.show_help = !self.show_help,
+            Action::Delete => self.delete_current(),
+            Action::Quit => {
+                // In the editor, unsaved edits ask first.
+                if !self.in_editor() || self.exit_editor(true) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+            Action::Undo => self.editor_undo(),
+            Action::Redo => self.editor_redo(),
+            Action::Save => {
+                self.save_inplace();
+            }
+            Action::SaveAs => {
+                self.save_as_returning(ctx);
+            }
+            Action::CycleGuides => self.guides = self.guides.next(),
+            Action::ResetView => {
+                self.zoom = 1.0;
+                self.pan = egui::Vec2::ZERO;
             }
         }
+    }
+
+    /// Keep the window title on what is shown: `● name — 12 / 129 — Patina`.
+    /// It used to change only after a save, so navigating left the old name.
+    fn sync_title(&mut self, ctx: &egui::Context) {
+        let title = window_title(
+            self.current_filename().as_deref(),
+            self.current_path
+                .as_deref()
+                .and_then(|p| self.navigator.position_of(p)),
+            self.editor_params_changed(),
+        );
+        if title != self.title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
+        }
+    }
+}
+
+/// The window title: the file, its place in the folder when there is more
+/// than one, and ● while there are unsaved edits.
+fn window_title(name: Option<&str>, position: Option<(usize, usize)>, dirty: bool) -> String {
+    let Some(name) = name else {
+        return APP_NAME.to_string();
+    };
+    let dot = if dirty { "● " } else { "" };
+    match position {
+        Some((i, n)) if n > 1 => format!("{dot}{name} — {i} / {n} — {APP_NAME}"),
+        _ => format!("{dot}{name} — {APP_NAME}"),
     }
 }
 
@@ -1810,7 +1777,7 @@ fn draw_help_modal(ctx: &egui::Context, in_editor: bool, show: &mut bool) {
             let row = |ui: &mut egui::Ui, key: &str, desc: &str| {
                 ui.horizontal(|ui| {
                     let (_, kr) =
-                        ui.allocate_exact_size(egui::vec2(120.0, 22.0), egui::Sense::hover());
+                        ui.allocate_exact_size(egui::vec2(170.0, 20.0), egui::Sense::hover());
                     ui.painter().text(
                         kr.rect.left_center(),
                         egui::Align2::LEFT_CENTER,
@@ -1827,46 +1794,43 @@ fn draw_help_modal(ctx: &egui::Context, in_editor: bool, show: &mut bool) {
                 ui.add_space(2.0);
             };
 
-            section(ui, "VIEWER");
-            row(ui, "← ↑ PgUp", "Previous image");
-            row(ui, "→ ↓ PgDn", "Next image");
-            row(ui, "E", "Enter Editor mode");
-            row(ui, "S", "Start / stop slideshow");
-            row(ui, "F  /  F11", "Toggle fullscreen");
-            row(ui, "Del", "Delete current image");
-            row(ui, "Q", "Quit");
-
-            section(ui, "SLIDESHOW");
-            row(ui, "S", "Stop slideshow");
-            row(ui, "Esc", "Stop slideshow");
-            row(ui, "F  /  F11", "Stop slideshow");
-
-            if in_editor {
-                section(ui, "EDITOR");
-                row(ui, "E  /  Esc", "Return to Viewer");
-                row(ui, "Ctrl+Z", "Undo");
-                row(ui, "Ctrl+Shift+Z", "Redo");
-                row(ui, "Ctrl+S", "Save");
-                row(ui, "Ctrl+Shift+S", "Save As");
-                row(ui, "Del", "Delete current image");
-                row(ui, "G", "Toggle guide overlay");
-                row(ui, "Tab", "Cycle guide type");
-                row(ui, "Ctrl+Scroll", "Zoom in / out");
-                row(ui, "Ctrl+0", "Reset zoom & pan");
-                row(ui, "Drag canvas", "Pan");
-                row(ui, "F  /  F11", "Toggle fullscreen");
-                row(ui, "Q", "Quit");
+            // The mode on screen first; both lists are always there, so the
+            // help is a reference, not just a list of what works right now.
+            let order = if in_editor {
+                [
+                    (keymap::Mode::Editor, "EDITOR"),
+                    (keymap::Mode::Viewer, "VIEWER"),
+                ]
+            } else {
+                [
+                    (keymap::Mode::Viewer, "VIEWER"),
+                    (keymap::Mode::Editor, "EDITOR"),
+                ]
+            };
+            for (mode, title) in order {
+                section(ui, title);
+                for b in keymap::KEYMAP.iter().filter(|b| b.mode == mode) {
+                    row(ui, &keymap::keys_label(b.keys), b.what);
+                }
+                for &(_, gesture, what) in keymap::MOUSE_HELP.iter().filter(|m| m.0 == mode) {
+                    row(ui, gesture, what);
+                }
+            }
+            section(ui, "EVERYWHERE");
+            for b in keymap::KEYMAP
+                .iter()
+                .filter(|b| b.mode == keymap::Mode::Both)
+            {
+                row(ui, &keymap::keys_label(b.keys), b.what);
             }
 
             ui.add_space(12.0);
             ui.separator();
             ui.add_space(6.0);
             ui.label(
-                egui::RichText::new(
-                    "Double-click any slider to reset it to default  ·  H or Esc to close",
-                )
-                .color(DIM)
-                .size(11.0),
+                egui::RichText::new("H or Esc to close")
+                    .color(DIM)
+                    .size(11.0),
             );
         });
 
@@ -1903,7 +1867,7 @@ fn draw_star(p: &egui::Painter, centre: egui::Pos2, r_out: f32, r_in: f32, color
     p.add(egui::Shape::convex_polygon(pts, color, egui::Stroke::NONE));
 }
 
-fn draw_guides(ui: &egui::Ui, r: egui::Rect, guide_type: GuideType) {
+fn draw_guides(ui: &egui::Ui, r: egui::Rect, guides: Guides) {
     const LINE_COLOR: egui::Color32 = egui::Color32::from_rgba_premultiplied(255, 255, 255, 60);
     const STROKE: egui::Stroke = egui::Stroke {
         width: 1.0,
@@ -1911,11 +1875,12 @@ fn draw_guides(ui: &egui::Ui, r: egui::Rect, guide_type: GuideType) {
     };
     let p = ui.painter();
 
-    let divisions: &[f32] = match guide_type {
+    let divisions: &[f32] = match guides {
+        Guides::Off => return,
         // Rule of thirds: divide into equal thirds
-        GuideType::RuleOfThirds => &[1.0 / 3.0, 2.0 / 3.0],
+        Guides::Thirds => &[1.0 / 3.0, 2.0 / 3.0],
         // Golden ratio: phi-based divisions (~0.382 / 0.618)
-        GuideType::GoldenRatio => &[0.382, 0.618],
+        Guides::Golden => &[0.382, 0.618],
     };
 
     for &t in divisions {
@@ -2379,14 +2344,14 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
         app.save_as_modal = None;
     }
     if confirm {
-        confirm_save_as(app, ctx);
+        confirm_save_as(app);
     }
 }
 
 /// Save As's Save button or Enter. A file already at the target is replaced
 /// only on a second confirm of the same path, after the dialog has said so;
 /// before, it was replaced without a word.
-fn confirm_save_as(app: &mut App, ctx: &egui::Context) {
+fn confirm_save_as(app: &mut App) {
     let Some(m) = &mut app.save_as_modal else {
         return;
     };
@@ -2397,7 +2362,7 @@ fn confirm_save_as(app: &mut App, ctx: &egui::Context) {
     }
     let (q, d) = (m.quality, m.max_dim);
     app.save_as_modal = None;
-    app.commit_save_as(ctx, dest, q, d);
+    app.commit_save_as(dest, q, d);
 }
 
 /// Paint a format selector pill button (active = spruce accent, inactive = dark with hover).
@@ -2739,13 +2704,6 @@ fn move_to_trash(path: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-fn update_title(ctx: &egui::Context, name: Option<&str>) {
-    let title = name
-        .map(|n| format!("{APP_NAME} — {n}"))
-        .unwrap_or_else(|| APP_NAME.to_string());
-    ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
-}
-
 /// Clamp `w×h` to 90% of the screen rect, with a minimum of `MIN_WINDOW`.
 fn clamp_to_work_area(w: u32, h: u32, ctx: &egui::Context) -> (u32, u32) {
     let screen = ctx.screen_rect();
@@ -3073,6 +3031,7 @@ mod keyboard_tests {
             app.guard_close(ctx);
             app.draw_ui(ctx);
             app.process_keyboard(ctx);
+            app.sync_title(ctx);
         });
         out.viewport_output
             .into_values()
@@ -3388,7 +3347,7 @@ mod keyboard_tests {
         app.save_as_returning(&ctx);
         app.save_as_modal.as_mut().unwrap().stem = "b".into();
 
-        confirm_save_as(&mut app, &ctx);
+        confirm_save_as(&mut app);
 
         assert_eq!(
             std::fs::read(&other).unwrap(),
@@ -3403,7 +3362,7 @@ mod keyboard_tests {
 
         // A different name is a new target: saved at once, b.jpg untouched.
         app.save_as_modal.as_mut().unwrap().stem = "c".into();
-        confirm_save_as(&mut app, &ctx);
+        confirm_save_as(&mut app);
         assert!(app.save_as_modal.is_none());
         assert!(dir.0.join("c.jpg").exists());
         assert_eq!(std::fs::read(&other).unwrap(), b"someone else's photo");
@@ -3420,8 +3379,8 @@ mod keyboard_tests {
         app.save_as_returning(&ctx);
         app.save_as_modal.as_mut().unwrap().stem = "b".into();
 
-        confirm_save_as(&mut app, &ctx);
-        confirm_save_as(&mut app, &ctx);
+        confirm_save_as(&mut app);
+        confirm_save_as(&mut app);
 
         assert!(app.save_as_modal.is_none());
         assert!(
@@ -3483,5 +3442,103 @@ mod keyboard_tests {
 
         assert!(!old.exists() && new.exists());
         assert_eq!(app.current_path.as_ref(), Some(&new));
+    }
+
+    // ── Title, keymap and guides ──────────────────────────────────────────────
+
+    fn title(cmds: Vec<egui::ViewportCommand>) -> Option<String> {
+        cmds.into_iter().find_map(|c| match c {
+            egui::ViewportCommand::Title(t) => Some(t),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn the_title_follows_navigation_and_unsaved_edits() {
+        let dir = TempDir::new("title");
+        let a = dir.jpeg("a.jpg");
+        let b = dir.jpeg("b.jpg");
+        dir.jpeg("c.jpg");
+        let (mut app, ctx) = app_on(&a);
+
+        let first = run(&mut app, &ctx, vec![], false);
+        assert_eq!(title(first).as_deref(), Some("a.jpg — 1 / 3 — Patina"));
+        assert_eq!(
+            title(run(&mut app, &ctx, vec![], false)),
+            None,
+            "sent when it changes, not every frame"
+        );
+
+        // → loads b.jpg on a background thread, as in the app.
+        frame(
+            &mut app,
+            &ctx,
+            vec![press(Key::ArrowRight, Modifiers::NONE)],
+        );
+        for _ in 0..500 {
+            if app.current_path.as_ref() == Some(&b) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            let _ = ctx.run(Default::default(), |ctx| {
+                app.process_background_messages(ctx)
+            });
+        }
+        assert_eq!(app.current_path.as_ref(), Some(&b), "b.jpg loaded");
+        let after = run(&mut app, &ctx, vec![], false);
+        assert_eq!(title(after).as_deref(), Some("b.jpg — 2 / 3 — Patina"));
+
+        edit(&mut app, &ctx);
+        let dirty = run(&mut app, &ctx, vec![], false);
+        assert_eq!(title(dirty).as_deref(), Some("● b.jpg — 2 / 3 — Patina"));
+    }
+
+    #[test]
+    fn a_lone_file_has_no_position() {
+        assert_eq!(
+            window_title(Some("a.jpg"), Some((1, 1)), false),
+            "a.jpg — Patina"
+        );
+        assert_eq!(window_title(None, None, false), "Patina");
+    }
+
+    #[test]
+    fn g_steps_through_the_guides_and_tab_does_not() {
+        let dir = TempDir::new("guides");
+        let (mut app, ctx) = app_on(&dir.jpeg("photo.jpg"));
+        app.enter_editor(&ctx);
+
+        let mut seen = vec![app.guides];
+        for _ in 0..3 {
+            frame(&mut app, &ctx, vec![press(Key::G, Modifiers::NONE)]);
+            seen.push(app.guides);
+        }
+        assert_eq!(
+            seen,
+            [Guides::Off, Guides::Thirds, Guides::Golden, Guides::Off]
+        );
+
+        frame(&mut app, &ctx, vec![press(Key::Tab, Modifiers::NONE)]);
+        assert_eq!(app.guides, Guides::Off);
+    }
+
+    /// The rating and label keys go through the keymap now; what they write
+    /// is the sidecar on disk.
+    #[test]
+    fn rating_and_label_keys_write_the_sidecar() {
+        let dir = TempDir::new("rate");
+        let path = dir.jpeg("photo.jpg");
+        let (mut app, ctx) = app_on(&path);
+
+        frame(&mut app, &ctx, vec![press(Key::Num3, Modifiers::NONE)]);
+        frame(&mut app, &ctx, vec![press(Key::L, Modifiers::NONE)]);
+
+        let on_disk = xmp::read_labels(&path);
+        assert!(xmp::sidecar_path(&path).exists());
+        assert_eq!(on_disk.rating, 3);
+        assert_eq!(on_disk.colour, ColourLabel::Red);
+
+        frame(&mut app, &ctx, vec![press(Key::Num0, Modifiers::NONE)]);
+        assert_eq!(xmp::read_labels(&path).rating, 0);
     }
 }

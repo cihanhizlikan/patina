@@ -72,6 +72,11 @@ and the arrow keys moved the view under an open delete dialog. **The delete dial
 save-and-quit closes only when the save succeeded. `keyboard_tests` in `src/main.rs` drive real key events through
 an egui context and check the files on disk; each fails with its fix reverted.
 
+**Every shortcut is one row of `KEYMAP`** (`src/keymap.rs`, 2026-11-01): the handler dispatches from it and the
+help overlay is drawn from it, key labels included, so the two cannot disagree — the hand-written help had left
+out 0–5 and L. A test fails if one key does two things in one mode. **Tab is not a shortcut**: it moves keyboard
+focus, as on the rest of the desktop; G alone steps the guides Off → Thirds → Golden.
+
 ## Nothing is replaced or dropped without asking (2026-11-01)
 Three paths did it silently. **Closing the window** (close button, Alt+F4) with unsaved edits now cancels the
 close and asks *Save changes?*, like Q; Discard on that question closes, where it used to only leave the editor.

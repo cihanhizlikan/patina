@@ -22,9 +22,8 @@ tiles. The viewer keeps its zero-chrome canvas. The editor rail is reorganised a
 1. ~~**rustfmt.**~~ Done — see settled-decisions.md.
 2. ~~**Logging.**~~ Done — see settled-decisions.md. **Still owed before a release**: the log needs a more
    elegant way in than a file path, e.g. *Help → Open log folder*, or a *Copy log* button on the error dialog.
-3. **Windows-app basics.** The title follows navigation (`● IMG_0412.jpg — 12 / 129 — Patina`, ● for unsaved
-   edits). One keymap table drives both the handler and the help overlay, so they cannot drift (help omits 0–5 and
-   L today); Tab goes back to egui focus, G cycles guides Off → Thirds → Golden.
+3. ~~**Windows-app basics.**~~ Done — the title follows navigation (`● IMG_0412.jpg — 12 / 129 — Patina`), one
+   keymap table (`src/keymap.rs`) drives the handler and the help, Tab is egui's, G cycles Off → Thirds → Golden.
 4. **Theme foundation.** Pin egui's dark base theme instead of following the OS. One green-tinted token set in
    `ui::tok` with every text colour at WCAG AA (today's faint grey `#5E5E63` is 2.6:1), checked by a test. One
    button component instead of three; Save is primary only with unsaved edits. Three-step type scale in Inter

@@ -96,6 +96,18 @@ impl DirNavigator {
         self.files.len()
     }
 
+    /// `path`'s place in the list, from 1, and the list's length. Usually
+    /// `path` is the current file and this costs nothing; while a navigation
+    /// is still loading it is not, and the list is searched.
+    pub fn position_of(&self, path: &Path) -> Option<(usize, usize)> {
+        let i = if self.current().is_some_and(|p| p == path) {
+            self.index
+        } else {
+            self.files.iter().position(|p| p == path)?
+        };
+        Some((i + 1, self.files.len()))
+    }
+
     /// Whether `path` is present in the current sibling list.
     pub fn contains(&self, path: &Path) -> bool {
         self.files.iter().any(|f| f.as_path() == path)
