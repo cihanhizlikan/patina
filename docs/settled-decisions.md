@@ -9,7 +9,8 @@ Patina began as a copy of Devoid Viewer (the first commit ships `devoid.ico`, re
 
 ## Rendering is GPU: eframe + wgpu, zero-copy textures
 The decoded image is uploaded to a `wgpu::Texture` and registered with egui (`src/view.rs`), so egui never holds
-a copy of the pixels. At Fit, downscaling for display is Lanczos on the CPU (`lanczos_if_needed`); zoomed, the
+a copy of the pixels. At Fit, downscaling for display is Lanczos on the CPU (`lanczos_if_needed`), done on the
+thread that decoded the image (`view::Fitted`, below); zoomed, the
 texture is full resolution with a box-filtered mip chain (2026-11-02, below). This is the opposite of Devoid Viewer's CPU blit, and deliberately so: Patina is an editor
 with live adjustments, not a minimal viewer. **The reason for wgpu over egui's glow backend was not recorded** —
 maintainer to fill in.
@@ -239,6 +240,19 @@ edit before encoding, not what the file decodes to, and the cache must hold what
 changed by another program stays stale** until it stops being a neighbour: the directory watcher also fires for
 Patina's own sidecar writes, so flushing on it would throw the cache away on every rating. What would move this:
 a watcher event that names the file, so only that entry goes.
+
+## The Fit reduction is made where the image is decoded (2026-11-02)
+Measured in the release build on 24 MP JPEGs (i5-12450H, UHD Graphics): every arrow held the window for
+513–557 ms, preloaded or not, because the Lanczos pass to Fit ran at upload, on the UI thread; of four quick
+presses, two landed. Now the load and preload threads make it (`view::Fitted`, for the window size at the time),
+and the upload takes it when the image generation and the window size still match: 9–17 ms per arrow, four quick
+presses all land. A neighbour made for another window size is decoded again once the size has held for 300 ms
+(`refit_after_resize`), so a drag-resize costs one decode per neighbour, not one per frame; the first image
+waits for that too, as it resizes the window. **The first image itself is still reduced at upload** (~0.6 s at
+24 MP): its window size is not known until it is decoded. Animation frames after the first, and the edit, are
+also still reduced at upload. `a_large_image_arrives_reduced_for_fit`, `a_resize_prepares_the_neighbours_again`.
+Not taken: a parallel Lanczos or the `fast_image_resize` crate, which would shorten every reduction but leave
+it on the UI thread, and add a dependency.
 
 ## Paths are used as given — no `canonicalize` (inherited)
 `std::fs::canonicalize` on Windows returns a verbatim `\\?\C:\…` path, which breaks paths handed over by

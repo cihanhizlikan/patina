@@ -201,6 +201,36 @@ impl ImageTexture {
 /// What a texture was made from: the image's generation, its frame, the tier.
 pub type Key = (u64, usize, Tier);
 
+/// An image's first frame made ready for Fit on a `canvas`-sized window, on
+/// the thread that decoded it. The Lanczos pass costs ~0.5 s for 24 MP and,
+/// done at upload, held up the window on every arrow, preloaded or not.
+#[derive(Debug)]
+pub struct Fitted {
+    canvas: Vec2,
+    /// `None` when Fit shows the image at half size or more and the texture
+    /// takes its pixels as they are.
+    reduced: Option<(Vec<u8>, u32, u32)>,
+}
+
+impl Fitted {
+    pub fn of(pixels: &[u8], w: u32, h: u32, canvas: Vec2) -> Self {
+        Fitted {
+            canvas,
+            reduced: lanczos_if_needed(pixels, w, h, canvas),
+        }
+    }
+
+    /// Made for a window of this size.
+    pub fn suits(&self, canvas: Vec2) -> bool {
+        self.canvas == canvas
+    }
+
+    #[cfg(test)]
+    pub fn is_reduced(&self) -> bool {
+        self.reduced.is_some()
+    }
+}
+
 /// One texture and what it holds, so it is uploaded only when that changes.
 #[derive(Default)]
 pub struct Slot {
@@ -220,6 +250,8 @@ impl Slot {
         }
     }
 
+    /// `fitted` is used for a Fit upload when it was made for this canvas;
+    /// otherwise the reduction is done here.
     pub fn upload(
         &mut self,
         rs: &egui_wgpu::RenderState,
@@ -227,6 +259,7 @@ impl Slot {
         pixels: &[u8],
         (w, h): (u32, u32),
         canvas: Vec2,
+        fitted: Option<&Fitted>,
     ) {
         if w == 0 || h == 0 {
             return;
@@ -234,7 +267,11 @@ impl Slot {
         let t = Instant::now();
         let max = rs.device.limits().max_texture_dimension_2d;
         let (base, w, h) = match key.2 {
-            Tier::Fit => lanczos_if_needed(pixels, w, h, canvas),
+            Tier::Fit => match fitted.filter(|f| f.suits(canvas)) {
+                Some(f) => f.reduced.clone(),
+                None => lanczos_if_needed(pixels, w, h, canvas),
+            }
+            .unwrap_or_else(|| (pixels.to_vec(), w, h)),
             Tier::Full => (pixels.to_vec(), w, h),
         };
         let (base, w, h) = cap_to(base, w, h, max);
@@ -406,16 +443,19 @@ fn cap_to(px: Vec<u8>, w: u32, h: u32, max: u32) -> (Vec<u8>, u32, u32) {
 ///
 /// GPU bilinear filtering aliases large images shown small; this removes it.
 /// The 50% threshold and 2× margin balance quality against CPU cost.
-fn lanczos_if_needed(pixels: &[u8], w: u32, h: u32, canvas_sz: Vec2) -> (Vec<u8>, u32, u32) {
+fn lanczos_if_needed(
+    pixels: &[u8],
+    w: u32,
+    h: u32,
+    canvas_sz: Vec2,
+) -> Option<(Vec<u8>, u32, u32)> {
     let fit = (canvas_sz.x / w as f32).min(canvas_sz.y / h as f32);
     if fit >= 0.5 {
-        return (pixels.to_vec(), w, h);
+        return None;
     }
     let target_w = ((w as f32 * fit * 2.0) as u32).max(1);
     let target_h = ((h as f32 * fit * 2.0) as u32).max(1);
-    let Some(buf) = image::RgbaImage::from_raw(w, h, pixels.to_vec()) else {
-        return (pixels.to_vec(), w, h);
-    };
+    let buf = image::RgbaImage::from_raw(w, h, pixels.to_vec())?;
     let resized = image::imageops::resize(
         &buf,
         target_w,
@@ -424,7 +464,7 @@ fn lanczos_if_needed(pixels: &[u8], w: u32, h: u32, canvas_sz: Vec2) -> (Vec<u8>
     );
     let (rw, rh) = resized.dimensions();
     log!("[upload] Lanczos {w}×{h} → {rw}×{rh} (fit={fit:.2})");
-    (resized.into_raw(), rw, rh)
+    Some((resized.into_raw(), rw, rh))
 }
 
 #[cfg(test)]

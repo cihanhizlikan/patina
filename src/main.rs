@@ -77,11 +77,13 @@ enum Msg {
     Loaded {
         path: PathBuf,
         image: DecodedImage,
+        fit: Option<view::Fitted>,
         mode: OpenMode,
     },
     WrongExtension {
         path: PathBuf,
         image: DecodedImage,
+        fit: Option<view::Fitted>,
         mode: OpenMode,
         correct_ext: String,
     },
@@ -93,6 +95,7 @@ enum Msg {
     Preloaded {
         path: PathBuf,
         image: DecodedImage,
+        fit: view::Fitted,
     },
     Deleted {
         path: PathBuf,
@@ -330,7 +333,14 @@ struct App {
     /// Last navigation or mouse move over the canvas: the HUD shows from it.
     hud_since: Option<Instant>,
     toast: hud::Toast,
-    preload_cache: HashMap<PathBuf, DecodedImage>,
+    preload_cache: HashMap<PathBuf, (DecodedImage, view::Fitted)>,
+    /// The current image reduced for Fit off the UI thread, with the
+    /// image_gen it was made for.
+    fitted: Option<(u64, view::Fitted)>,
+    /// The window size last seen, and when it last changed while the
+    /// neighbours still wait to be made ready for it.
+    canvas_seen: egui::Vec2,
+    canvas_moved_at: Option<Instant>,
     deleting: bool,
     dir_watcher: Option<DirWatcher>,
     watched_dir: Option<PathBuf>,
@@ -419,6 +429,9 @@ impl App {
             hud_since: None,
             toast: hud::Toast::default(),
             preload_cache: HashMap::new(),
+            fitted: None,
+            canvas_seen: egui::Vec2::ZERO,
+            canvas_moved_at: None,
             deleting: false,
             dir_watcher: None,
             watched_dir: None,
@@ -489,8 +502,8 @@ impl App {
 
     fn open_image(&mut self, path: PathBuf, mode: OpenMode, ctx: &egui::Context) {
         // Serve from preload cache if available — no disk I/O.
-        if let Some(cached) = self.preload_cache.remove(&path) {
-            self.apply_image(path, cached, mode, ctx);
+        if let Some((cached, fit)) = self.preload_cache.remove(&path) {
+            self.apply_image(path, cached, Some(fit), mode, ctx);
             ctx.request_repaint();
             return;
         }
@@ -502,23 +515,10 @@ impl App {
         self.loading_since = Some(Instant::now());
 
         let tx = self.msg_tx.clone();
+        let canvas = ctx.screen_rect().size();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let msg = match load_image(&path) {
-                LoadOutcome::Ok(img) => Msg::Loaded {
-                    path,
-                    image: img,
-                    mode,
-                },
-                LoadOutcome::WrongExtension(img, ext) => Msg::WrongExtension {
-                    path,
-                    image: img,
-                    mode,
-                    correct_ext: ext,
-                },
-                LoadOutcome::Unsupported(reason) => Msg::Unsupported { path, reason, mode },
-            };
-            let _ = tx.send(msg);
+            let _ = tx.send(decode(path, Some(canvas), mode));
             ctx.request_repaint();
         });
     }
@@ -527,6 +527,7 @@ impl App {
         &mut self,
         path: PathBuf,
         img: DecodedImage,
+        fit: Option<view::Fitted>,
         mode: OpenMode,
         ctx: &egui::Context,
     ) {
@@ -549,6 +550,7 @@ impl App {
         self.current_image = Some(img);
         self.current_path = Some(path.clone());
         self.image_gen += 1;
+        self.fitted = fit.map(|f| (self.image_gen, f));
         // An arrow in the editor: the editor stays, on the new image. The
         // rail was disabled while it loaded (`editor_busy`), so no edit was
         // made to the image going away.
@@ -561,7 +563,13 @@ impl App {
             self.watch_directory(path.parent().map(|p| p.to_path_buf()), ctx);
         }
 
-        self.preload_neighbours(ctx);
+        // The first image resizes the window, so its neighbours are prepared
+        // once the size has settled (efit_after_resize), not for this one.
+        if mode == OpenMode::FirstImage {
+            self.canvas_moved_at = Some(Instant::now());
+        } else {
+            self.preload_neighbours(ctx);
+        }
 
         // Load XMP labels synchronously — tiny file, negligible I/O.
         self.labels = self
@@ -617,6 +625,28 @@ impl App {
         self.preload_neighbours(ctx);
     }
 
+    /// Once the window has kept one size for `SETTLE`, prepare the
+    /// neighbours for it: a neighbour made ready for the old size would be
+    /// reduced again on the UI thread when an arrow shows it. Waiting means a
+    /// drag-resize decodes them once, not every frame.
+    fn refit_after_resize(&mut self, ctx: &egui::Context) {
+        const SETTLE: Duration = Duration::from_millis(300);
+        let canvas = ctx.screen_rect().size();
+        if canvas != self.canvas_seen {
+            self.canvas_seen = canvas;
+            self.canvas_moved_at = Some(Instant::now());
+        }
+        let Some(at) = self.canvas_moved_at else {
+            return;
+        };
+        if at.elapsed() < SETTLE {
+            ctx.request_repaint_after(SETTLE - at.elapsed());
+            return;
+        }
+        self.canvas_moved_at = None;
+        self.preload_neighbours(ctx);
+    }
+
     /// The files an arrow key would open next. Peek: next() and prev() move
     /// the navigator's position.
     fn neighbours(&self) -> [Option<PathBuf>; 2] {
@@ -629,19 +659,23 @@ impl App {
     /// decoded — 96 MB each at 24 MP.
     fn preload_neighbours(&mut self, ctx: &egui::Context) {
         let neighbours = self.neighbours();
+        let canvas = ctx.screen_rect().size();
         self.preload_cache
-            .retain(|p, _| neighbours.iter().flatten().any(|n| n == p));
+            .retain(|p, (_, fit)| neighbours.iter().flatten().any(|n| n == p) && fit.suits(canvas));
         for p in neighbours.into_iter().flatten() {
             if self.preload_cache.contains_key(&p) || self.loading_path.as_ref() == Some(&p) {
                 continue;
             }
             let tx = self.msg_tx.clone();
+            let canvas = ctx.screen_rect().size();
             let ctx = ctx.clone();
             std::thread::spawn(move || {
                 if let LoadOutcome::Ok(img) = load_image(&p) {
+                    let fit = fit_of(&img, canvas);
                     let _ = tx.send(Msg::Preloaded {
                         path: p,
                         image: img,
+                        fit,
                     });
                     ctx.request_repaint();
                 }
@@ -711,9 +745,14 @@ impl App {
         let mut dr = DrainResult::default();
         while let Ok(msg) = self.msg_rx.try_recv() {
             match msg {
-                Msg::Loaded { path, image, mode } => {
+                Msg::Loaded {
+                    path,
+                    image,
+                    fit,
+                    mode,
+                } => {
                     let (w, h) = (image.width, image.height);
-                    self.apply_image(path, image, mode, ctx);
+                    self.apply_image(path, image, fit, mode, ctx);
                     if mode == OpenMode::FirstImage {
                         dr.resize_to = Some((w, h));
                     }
@@ -721,11 +760,12 @@ impl App {
                 Msg::WrongExtension {
                     path,
                     image,
+                    fit,
                     mode,
                     correct_ext,
                 } => {
                     let (w, h) = (image.width, image.height);
-                    self.apply_image(path.clone(), image, mode, ctx);
+                    self.apply_image(path.clone(), image, fit, mode, ctx);
                     if mode == OpenMode::FirstImage {
                         dr.resize_to = Some((w, h));
                     }
@@ -736,9 +776,9 @@ impl App {
                     self.show_bad_file(path, reason, mode, ctx);
                 }
                 // A decode that lands after the user has moved on is dropped.
-                Msg::Preloaded { path, image } => {
+                Msg::Preloaded { path, image, fit } => {
                     if self.neighbours().contains(&Some(path.clone())) {
-                        self.preload_cache.insert(path, image);
+                        self.preload_cache.insert(path, (image, fit));
                     }
                 }
                 Msg::Deleted { path, result } => {
@@ -1336,6 +1376,7 @@ impl eframe::App for App {
         self.process_background_messages(ctx);
         self.tick_and_schedule_animation(ctx);
         self.drive_async_edit(ctx);
+        self.refit_after_resize(ctx);
         self.upload_textures(ctx, frame);
         self.draw_ui(ctx);
         self.process_keyboard(ctx);
@@ -1493,8 +1534,13 @@ impl App {
             let key = (self.image_gen, self.frame_index, tier);
             if !self.original_tex.holds(key) {
                 let px = &img.frame(self.frame_index).pixels;
+                let fitted = self
+                    .fitted
+                    .as_ref()
+                    .filter(|(gen, _)| *gen == self.image_gen && self.frame_index == 0)
+                    .map(|(_, f)| f);
                 self.original_tex
-                    .upload(rs, key, px, (img.width, img.height), canvas);
+                    .upload(rs, key, px, (img.width, img.height), canvas, fitted);
             }
         }
         match &self.editor_state {
@@ -1508,6 +1554,7 @@ impl App {
                         px,
                         (es.display.width, es.display.height),
                         canvas,
+                        None,
                     );
                 }
             }
@@ -3010,6 +3057,34 @@ fn load_icon() -> egui::IconData {
     egui::IconData::default()
 }
 
+/// The first frame reduced for Fit on `canvas`, made on the decoding thread
+/// so the upload does not hold up the window.
+fn fit_of(img: &DecodedImage, canvas: egui::Vec2) -> view::Fitted {
+    view::Fitted::of(&img.frame(0).pixels, img.width, img.height, canvas)
+}
+
+/// Decode `path` into the message that carries it to the UI thread, with its
+/// Fit reduction when the canvas is known.
+fn decode(path: PathBuf, canvas: Option<egui::Vec2>, mode: OpenMode) -> Msg {
+    let fit = |img: &DecodedImage| canvas.map(|c| fit_of(img, c));
+    match load_image(&path) {
+        LoadOutcome::Ok(image) => Msg::Loaded {
+            path,
+            fit: fit(&image),
+            image,
+            mode,
+        },
+        LoadOutcome::WrongExtension(image, correct_ext) => Msg::WrongExtension {
+            path,
+            fit: fit(&image),
+            image,
+            mode,
+            correct_ext,
+        },
+        LoadOutcome::Unsupported(reason) => Msg::Unsupported { path, reason, mode },
+    }
+}
+
 fn image_size_hint(path: &Path) -> Option<(u32, u32)> {
     image::ImageReader::open(path)
         .ok()?
@@ -3037,26 +3112,10 @@ fn main() {
     // The message will be waiting in msg_rx on the first update() call.
     if let Some(path) = initial_path {
         let tx = app.msg_tx.clone();
+        // No window yet, so no canvas to reduce for: the first image's Fit
+        // is made at upload, as the window resizes to it anyway.
         std::thread::spawn(move || {
-            let msg = match load_image(&path) {
-                LoadOutcome::Ok(img) => Msg::Loaded {
-                    path,
-                    image: img,
-                    mode: OpenMode::FirstImage,
-                },
-                LoadOutcome::WrongExtension(img, ext) => Msg::WrongExtension {
-                    path,
-                    image: img,
-                    mode: OpenMode::FirstImage,
-                    correct_ext: ext,
-                },
-                LoadOutcome::Unsupported(reason) => Msg::Unsupported {
-                    path,
-                    reason,
-                    mode: OpenMode::FirstImage,
-                },
-            };
-            let _ = tx.send(msg);
+            let _ = tx.send(decode(path, None, OpenMode::FirstImage));
         });
     }
 
@@ -4164,6 +4223,91 @@ mod keyboard_tests {
         assert!(sizes.iter().all(|&n| n <= 2), "{sizes:?}");
     }
 
+    /// An image Fit shows under half size arrives already reduced, by the
+    /// preload and by a direct open alike, so the upload has no Lanczos to do.
+    #[test]
+    fn a_large_image_arrives_reduced_for_fit() {
+        let dir = TempDir::new("fitted");
+        let wide = |name: &str| {
+            let path = dir.0.join(name);
+            image::RgbImage::from_pixel(3000, 200, image::Rgb([10, 120, 200]))
+                .save(&path)
+                .unwrap();
+            path
+        };
+        let a = dir.jpeg("a.jpg");
+        let b = wide("b.jpg");
+        let c = wide("c.jpg");
+        let (mut app, ctx) = app_on(&a);
+        frame(&mut app, &ctx, vec![]); // the 1280×800 canvas
+        app.preload_neighbours(&ctx);
+        pump_until(&mut app, &ctx, |app| app.preload_cache.contains_key(&b));
+
+        let fitted_now = |app: &App| {
+            app.fitted
+                .as_ref()
+                .is_some_and(|(g, f)| *g == app.image_gen && f.is_reduced())
+        };
+        frame(
+            &mut app,
+            &ctx,
+            vec![press(Key::ArrowRight, Modifiers::NONE)],
+        );
+        assert_eq!(app.current_path.as_ref(), Some(&b), "served from the cache");
+        assert!(fitted_now(&app), "the preload reduced b");
+
+        app.preload_cache.clear(); // c is opened from disk, not the cache
+        app.open_image(c.clone(), OpenMode::Navigate, &ctx);
+        pump_until(&mut app, &ctx, |app| app.current_path.as_ref() == Some(&c));
+        assert!(fitted_now(&app), "the load reduced c");
+
+        app.open_image(a.clone(), OpenMode::Navigate, &ctx);
+        pump_until(&mut app, &ctx, |app| app.current_path.as_ref() == Some(&a));
+        assert!(
+            app.fitted.as_ref().is_some_and(|(_, f)| !f.is_reduced()),
+            "a small image is shown as it is"
+        );
+    }
+
+    /// After a resize settles, the neighbours are made ready for the new size,
+    /// not left reduced for the old one.
+    #[test]
+    fn a_resize_prepares_the_neighbours_again() {
+        let dir = TempDir::new("refit");
+        let a = dir.jpeg("a.jpg");
+        let b = dir.jpeg("b.jpg");
+        let (mut app, ctx) = app_on(&a);
+        let sized = |w: f32, h: f32| egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(w, h),
+            )),
+            ..Default::default()
+        };
+        let at = |app: &mut App, w, h| {
+            let _ = ctx.run(sized(w, h), |ctx| {
+                app.process_background_messages(ctx);
+                app.refit_after_resize(ctx);
+            });
+        };
+        at(&mut app, 1280.0, 800.0);
+        app.preload_neighbours(&ctx);
+        pump_until(&mut app, &ctx, |app| app.preload_cache.contains_key(&b));
+
+        at(&mut app, 1000.0, 700.0);
+        assert!(
+            app.preload_cache[&b].1.suits(egui::vec2(1280.0, 800.0)),
+            "nothing is redone while the size may still be changing"
+        );
+        std::thread::sleep(Duration::from_millis(350));
+        at(&mut app, 1000.0, 700.0);
+        pump_until(&mut app, &ctx, |app| {
+            app.preload_cache
+                .get(&b)
+                .is_some_and(|(_, f)| f.suits(egui::vec2(1000.0, 700.0)))
+        });
+    }
+
     /// Save As over a neighbour, browse away and back: what shows is what the
     /// file now holds, not the decode cached before the save.
     #[test]
@@ -4175,7 +4319,7 @@ mod keyboard_tests {
         let (mut app, ctx) = app_on(&b);
         app.preload_neighbours(&ctx);
         pump_until(&mut app, &ctx, |app| app.preload_cache.contains_key(&c));
-        let before = app.preload_cache[&c].frames[0].pixels.clone();
+        let before = app.preload_cache[&c].0.frames[0].pixels.clone();
 
         edit(&mut app, &ctx);
         app.commit_save_as(c.clone(), 95, None);
