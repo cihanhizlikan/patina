@@ -3,8 +3,8 @@
 //! Architecture
 //! ============
 //! - eframe manages the window, event loop, and wgpu/egui backend.
-//! - Image pixels → wgpu texture → registered with egui via `register_native_texture`
-//!   → displayed as `egui::Image` in the CentralPanel. Zero pixel copies.
+//! - Image pixels → wgpu texture → registered with egui (view.rs) → painted in
+//!   the CentralPanel at the zoom `view::View` lays out. Zero pixel copies.
 //! - Editor panel → egui SidePanel (see ui.rs).
 //! - All app logic (loading, navigation, editing) lives in App and its methods.
 //!
@@ -35,6 +35,7 @@ mod nav;
 mod orientation;
 mod save;
 mod ui;
+mod view;
 mod xmp;
 
 use std::{
@@ -45,7 +46,6 @@ use std::{
 
 use crossbeam_channel::{bounded, Receiver, Sender};
 use editor::{apply_edits, EditParams, EditorState};
-use eframe::egui_wgpu::wgpu;
 use exif::ImageMetadata;
 use loader::{load_image, DecodedImage, LoadOutcome};
 use nav::DirNavigator;
@@ -133,17 +133,6 @@ enum ModalDialog {
     Error {
         message: String,
     },
-}
-
-// ── GPU image texture ─────────────────────────────────────────────────────────
-
-/// Wgpu texture registered with egui via `register_native_texture`.
-/// The `texture_id` is a stable handle — egui never touches the pixel data.
-struct ImageTexture {
-    texture: wgpu::Texture,
-    texture_id: egui::TextureId,
-    width: u32,
-    height: u32,
 }
 
 // ── Save As modal state ───────────────────────────────────────────────────────
@@ -277,6 +266,16 @@ enum OpenMode {
     Navigate,
 }
 
+/// A zoom the user asked for.
+#[derive(Clone, Copy, Debug)]
+enum ZoomTo {
+    /// One stop in (true) or out.
+    Step(bool),
+    Level(view::Zoom),
+    /// Fit ↔ 100%.
+    Toggle,
+}
+
 /// The guide overlay on the editor canvas; G steps through them in order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 enum Guides {
@@ -302,9 +301,12 @@ struct App {
     current_image: Option<DecodedImage>,
     frame_index: usize,
     next_frame_at: Option<Instant>,
-    image_texture: Option<ImageTexture>,
-    last_uploaded_gen: u64,
-    last_uploaded_frame: usize,
+    /// The source's texture. The viewer shows it, and so does the editor
+    /// until the first edit and while Backslash is held: a re-upload took
+    /// 680–743 ms, too slow to flick between before and after.
+    original_tex: view::Slot,
+    /// The edit's texture, editor only.
+    edit_tex: view::Slot,
 
     // ── Navigation & loading ──────────────────────────────────────────────────
     navigator: DirNavigator,
@@ -336,11 +338,14 @@ struct App {
     slideshow_active: bool,
     slideshow_next_at: Option<Instant>,
 
-    // ── Canvas view state (editor mode only) ──────────────────────────────────
-    /// Zoom multiplier: 1.0 = fit to canvas. Ctrl+scroll adjusts; Enter resets.
-    zoom: f32,
-    /// Pan offset in logical pixels from the centred position.
-    pan: egui::Vec2,
+    // ── Canvas view state ─────────────────────────────────────────────────────
+    /// Fit or a zoom, in both modes. Kept across images, so a burst is
+    /// checked for focus at 100% one frame after another.
+    view: view::View,
+    /// Ctrl+scroll not yet turned into a zoom step, in ln(zoom factor).
+    zoom_wheel: f32,
+    /// The canvas as last drawn, for a zoom made from the keyboard.
+    canvas: egui::Rect,
     guides: Guides,
     /// The window title last sent, so it is sent only when it changes.
     title: String,
@@ -353,13 +358,20 @@ struct App {
 
     // ── Editor ────────────────────────────────────────────────────────────────
     editor_state: Option<EditorState>,
+    /// An edit result has replaced `display` since the editor opened. Until
+    /// one does, `display` is the source and its texture is the original's.
+    edit_shown: bool,
+    /// Bumped when `display` changes, to upload its texture.
+    display_gen: u64,
+    /// Backslash is down in the editor: the original is on screen.
+    original_held: bool,
     initial_editor_params: Option<EditParams>,
     /// The preset chip being previewed on the canvas, if any.
     preview: Option<editor::Preset>,
     icon_cache: Option<Icons>,
 
     // ── Async pixel editing ───────────────────────────────────────────────────
-    edit_rx: Option<crossbeam_channel::Receiver<(u64, DecodedImage)>>,
+    edit_rx: Option<crossbeam_channel::Receiver<(u64, DecodedImage, editor::Histogram)>>,
     edit_gen: u64,
     last_slider_change: Option<Instant>,
 
@@ -384,9 +396,8 @@ impl App {
             current_image: None,
             frame_index: 0,
             next_frame_at: None,
-            image_texture: None,
-            last_uploaded_gen: u64::MAX,
-            last_uploaded_frame: usize::MAX,
+            original_tex: view::Slot::default(),
+            edit_tex: view::Slot::default(),
             navigator: DirNavigator::default(),
             msg_tx,
             msg_rx,
@@ -407,13 +418,17 @@ impl App {
             has_shown_first_image: false,
             slideshow_active: false,
             slideshow_next_at: None,
-            zoom: 1.0,
-            pan: egui::Vec2::ZERO,
+            view: view::View::default(),
+            zoom_wheel: 0.0,
+            canvas: egui::Rect::NOTHING,
             guides: Guides::Off,
             title: String::new(),
             metadata: None,
             labels: ImageLabels::default(),
             editor_state: None,
+            edit_shown: false,
+            display_gen: 0,
+            original_held: false,
             initial_editor_params: None,
             preview: None,
             icon_cache: None,
@@ -436,12 +451,18 @@ impl App {
         self.editor_state.is_some()
     }
 
-    /// Returns the image to display: editor preview if in editor, else raw image.
-    fn view(&self) -> Option<&DecodedImage> {
-        self.editor_state
-            .as_ref()
-            .map(|es| &es.display)
-            .or(self.current_image.as_ref())
+    /// The edit is on screen: in the editor, after its first result, and
+    /// not while the original is held.
+    fn showing_edit(&self) -> bool {
+        self.in_editor() && self.edit_shown && !self.original_held
+    }
+
+    /// The pixels on screen.
+    fn shown_image(&self) -> Option<&DecodedImage> {
+        match &self.editor_state {
+            Some(es) if self.showing_edit() => Some(&es.display),
+            _ => self.current_image.as_ref(),
+        }
     }
 
     fn current_filename(&self) -> Option<String> {
@@ -502,8 +523,6 @@ impl App {
         self.deleting = false;
         self.frame_index = 0;
         self.metadata = None;
-        self.zoom = 1.0;
-        self.pan = egui::Vec2::ZERO;
 
         // Schedule first animation frame for animated images.
         self.next_frame_at = if img.frames.len() > 1 {
@@ -633,8 +652,6 @@ impl App {
         self.metadata = None;
         self.labels = ImageLabels::default();
         self.bad_file = None;
-        self.zoom = 1.0;
-        self.pan = egui::Vec2::ZERO;
     }
 
     // ── Animation ─────────────────────────────────────────────────────────────
@@ -834,6 +851,7 @@ impl App {
             self.stop_slideshow(ctx);
         }
         self.editor_state = Some(EditorState::new(&img));
+        self.edit_shown = false;
         self.initial_editor_params = Some(EditParams::default());
     }
 
@@ -865,11 +883,10 @@ impl App {
         self.icon_cache = None;
         self.edit_rx = None;
         self.last_slider_change = None;
-        // Force the GPU texture to be re-uploaded from current_image.
-        // The editor's async pipeline may have left a modified image in the
-        // texture slot — incrementing image_gen triggers a fresh upload from
-        // the unedited current_image on the next frame.
-        self.image_gen += 1;
+        // The original's texture was never written by an edit, so the viewer
+        // shows it again with no upload.
+        self.edit_shown = false;
+        self.original_held = false;
     }
 
     fn editor_params_changed(&self) -> bool {
@@ -932,7 +949,9 @@ impl App {
         let (tx, rx) = bounded(1);
         self.edit_rx = Some(rx);
         std::thread::spawn(move || {
-            let _ = tx.send((gen, apply_edits(&orig, &params)));
+            let img = apply_edits(&orig, &params);
+            let hist = editor::histogram(&img);
+            let _ = tx.send((gen, img, hist));
         });
     }
 
@@ -941,13 +960,15 @@ impl App {
             return false;
         };
         match rx.try_recv() {
-            Ok((gen, img)) => {
+            Ok((gen, img, hist)) => {
                 self.edit_rx = None;
                 if gen == self.edit_gen {
                     if let Some(es) = &mut self.editor_state {
                         es.display = img;
+                        es.histogram = hist;
                         es.dirty = false;
-                        self.image_gen += 1;
+                        self.edit_shown = true;
+                        self.display_gen += 1;
                     }
                     return true;
                 }
@@ -1182,6 +1203,9 @@ impl App {
         if let Some(es) = &mut self.editor_state {
             es.undo.push(EditParams::default());
             es.dirty = false;
+            if let Some(img) = &self.current_image {
+                es.source_histogram = editor::histogram(img);
+            }
         }
         self.initial_editor_params = Some(EditParams::default());
     }
@@ -1241,7 +1265,7 @@ impl eframe::App for App {
         self.process_background_messages(ctx);
         self.tick_and_schedule_animation(ctx);
         self.drive_async_edit(ctx);
-        self.upload_current_frame(ctx, frame);
+        self.upload_textures(ctx, frame);
         self.draw_ui(ctx);
         self.process_keyboard(ctx);
         self.sync_title(ctx);
@@ -1374,39 +1398,43 @@ impl App {
         }
     }
 
-    /// Upload pixel data to the GPU if the image generation or frame changed.
-    fn upload_current_frame(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        if self.image_gen == self.last_uploaded_gen && self.frame_index == self.last_uploaded_frame
-        {
+    /// Upload what changed: the source when it or its frame did, the edit
+    /// when a result arrived, either when the zoom moved between Fit and the
+    /// full-resolution textures. The edit's texture goes when the editor does.
+    fn upload_textures(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        let Some(rs) = frame.wgpu_render_state() else {
             return;
-        }
-
-        self.last_uploaded_gen = self.image_gen;
-        self.last_uploaded_frame = self.frame_index;
-
-        // Clone pixels before the mutable borrow on image_texture.
-        // Clone pixels before the mutable borrow on image_texture.
-        // Pass canvas size so upload can pre-downsample for high-quality minification.
-        let canvas_size = ctx.screen_rect().size();
-        let upload = self.view().map(|img| {
-            let fd = img.frame(self.frame_index);
-            (fd.pixels.clone(), img.width, img.height)
-        });
-        if let Some((pixels, w, h)) = upload {
-            let t = Instant::now();
-            upload_image_texture(
-                ctx,
-                frame,
-                &pixels,
-                w,
-                h,
-                canvas_size,
-                &mut self.image_texture,
-            );
-            let ms = t.elapsed().as_millis();
-            if ms > 2 {
-                log!("[upload] {}×{} {}ms", w, h, ms);
+        };
+        let canvas = ctx.screen_rect().size();
+        let tier = if self.view.is_fit() {
+            view::Tier::Fit
+        } else {
+            view::Tier::Full
+        };
+        if let Some(img) = &self.current_image {
+            let key = (self.image_gen, self.frame_index, tier);
+            if !self.original_tex.holds(key) {
+                let px = &img.frame(self.frame_index).pixels;
+                self.original_tex
+                    .upload(rs, key, px, (img.width, img.height), canvas);
             }
+        }
+        match &self.editor_state {
+            Some(es) if self.edit_shown => {
+                let key = (self.display_gen, self.frame_index, tier);
+                if !self.edit_tex.holds(key) {
+                    let px = &es.display.frame(self.frame_index).pixels;
+                    self.edit_tex.upload(
+                        rs,
+                        key,
+                        px,
+                        (es.display.width, es.display.height),
+                        canvas,
+                    );
+                }
+            }
+            Some(_) => {}
+            None => self.edit_tex.free(rs),
         }
     }
 
@@ -1512,6 +1540,12 @@ impl App {
             .as_ref()
             .map(|es| es.undo.can_redo())
             .unwrap_or(false);
+        let es = self.editor_state.as_ref()?;
+        let histogram = if self.original_held {
+            &es.source_histogram
+        } else {
+            &es.histogram
+        };
         let action = draw_panel(
             ctx,
             PanelInput {
@@ -1520,6 +1554,7 @@ impl App {
                 can_redo,
                 dirty: self.editor_params_changed(),
                 icons: self.icon_cache.as_ref().unwrap(),
+                histogram,
             },
         );
         self.preview_preset(action.hover_preset, &params);
@@ -1536,78 +1571,99 @@ impl App {
             .frame(egui::Frame::none().fill(ui::tok::CANVAS))
             .show(ctx, |ui| {
                 let canvas = ui.available_rect_before_wrap();
+                self.canvas = canvas;
                 self.draw_canvas_image(ui);
                 self.draw_viewer_overlays(ui, canvas);
-                self.handle_canvas_scroll(ui, ctx);
+                self.handle_canvas_scroll(ui, ctx, canvas);
                 self.handle_canvas_drop(ui, ctx);
             });
     }
 
+    /// The shown image's size in pixels.
+    fn shown_px(&self) -> Option<egui::Vec2> {
+        self.shown_image()
+            .map(|img| egui::vec2(img.width as f32, img.height as f32))
+    }
+
     fn draw_canvas_image(&mut self, ui: &mut egui::Ui) {
-        // The texture outlives the image it was made from (it is reused for
-        // the next one), so with no image there is nothing to draw.
-        if self.view().is_none() {
-            return;
-        }
-        let Some(it) = &self.image_texture else {
+        let Some(img) = self.shown_px() else {
             return;
         };
         let canvas = ui.available_rect_before_wrap();
+        let ppp = ui.ctx().pixels_per_point();
         // Allocate the full canvas first for reliable click/drag sense.
         let canvas_resp = ui.allocate_rect(canvas, egui::Sense::click_and_drag());
+        let img_rect = self.view.image_rect(canvas, img, ppp);
 
-        // Fit image to canvas, then apply view zoom.
-        let fit = (canvas.width() / it.width as f32).min(canvas.height() / it.height as f32);
-        let dw = it.width as f32 * fit * self.zoom;
-        let dh = it.height as f32 * fit * self.zoom;
-
-        // Centre + apply pan offset. In editor mode, zoom and pan are active.
-        let cx = canvas.min.x + (canvas.width() - dw) * 0.5;
-        let cy = canvas.min.y + (canvas.height() - dh) * 0.5;
-        let (ox, oy) = if self.in_editor() {
-            // Clamp pan so the image cannot be dragged entirely off the canvas.
-            // Allow panning up to (image_size - canvas_size) / 2 in each direction,
-            // so at least half the image is always visible.
-            let max_pan_x = ((dw - canvas.width()) * 0.5).max(0.0);
-            let max_pan_y = ((dh - canvas.height()) * 0.5).max(0.0);
-            let px = self.pan.x.clamp(-max_pan_x, max_pan_x);
-            let py = self.pan.y.clamp(-max_pan_y, max_pan_y);
-            // Also prevent panning into the right panel: cap ox so the image
-            // left edge never goes past canvas.max.x (the panel boundary).
-            let ox = (cx + px).min(canvas.max.x - 1.0);
-            let oy = cy + py;
-            (ox, oy)
+        let slot = if self.showing_edit() {
+            &self.edit_tex
         } else {
-            (cx, cy)
+            &self.original_tex
         };
+        if let Some(it) = &slot.tex {
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            let id = it.id(self.view.scale(canvas, img, ppp));
+            ui.painter().image(id, img_rect, uv, egui::Color32::WHITE);
+        }
 
-        let img_rect = egui::Rect::from_min_size(egui::pos2(ox, oy), egui::vec2(dw, dh));
-
-        egui::Image::new(egui::load::SizedTexture::new(
-            it.texture_id,
-            egui::vec2(it.width as f32, it.height as f32),
-        ))
-        .fit_to_exact_size(egui::vec2(dw, dh))
-        .paint_at(ui, img_rect);
-
-        // ── Guide overlays (editor mode only) ─────────────────────────────────
         if self.in_editor() {
             draw_guides(ui, img_rect, self.guides);
         }
 
-        // ── Pan (drag in editor mode) ──────────────────────────────────────────
-        if self.in_editor() && canvas_resp.dragged() {
-            self.pan += canvas_resp.drag_delta();
+        // A zoomed image is dragged around, in both modes.
+        if !self.view.is_fit() {
+            if canvas_resp.dragged() {
+                self.view.pan(canvas_resp.drag_delta(), canvas, img, ppp);
+            }
+            if canvas_resp.hovered() {
+                ui.ctx().set_cursor_icon(if canvas_resp.dragged() {
+                    egui::CursorIcon::Grabbing
+                } else {
+                    egui::CursorIcon::Grab
+                });
+            }
         }
 
-        // ── Double-click: toggle maximize (when not dragging) ─────────────────
         if canvas_resp.double_clicked() {
             self.toggle_maximize(ui.ctx());
         }
     }
 
-    fn handle_canvas_scroll(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let (scroll_y, ctrl_held) = ui.input_mut(|i| {
+    /// Zoom by one stop or to `to`, about the pointer when it is over the
+    /// canvas, and say the new zoom in the toast lane.
+    fn zoom(&mut self, ctx: &egui::Context, canvas: egui::Rect, to: ZoomTo) {
+        let Some(img) = self.shown_px().filter(|_| canvas.is_positive()) else {
+            return;
+        };
+        let ppp = ctx.pixels_per_point();
+        let anchor = ctx
+            .input(|i| i.pointer.hover_pos())
+            .filter(|p| canvas.contains(*p))
+            .unwrap_or(canvas.center());
+        let before = self.view.zoom;
+        match to {
+            ZoomTo::Step(zoom_in) => self.view.step(zoom_in, canvas, img, ppp, anchor),
+            ZoomTo::Level(z) => self.view.zoom_to(z, canvas, img, ppp, anchor),
+            ZoomTo::Toggle => {
+                let z = if self.view.is_fit() {
+                    view::Zoom::Scale(1.0)
+                } else {
+                    view::Zoom::Fit
+                };
+                self.view.zoom_to(z, canvas, img, ppp, anchor);
+            }
+        }
+        if self.view.zoom != before {
+            self.toast.show(self.view.label());
+        }
+        ctx.request_repaint();
+    }
+
+    fn handle_canvas_scroll(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, canvas: egui::Rect) {
+        // Ctrl+scroll and a pinch reach egui as Zoom events, not Scroll ones
+        // (egui-winit turns them); the editor read Scroll with Ctrl, so its
+        // zoom never ran.
+        let (scroll_y, zoom) = ui.input_mut(|i| {
             let dir = i.events.iter().find_map(|ev| {
                 if let egui::Event::Scroll(d) = ev {
                     if d.y.abs() > d.x.abs() && d.y != 0.0 {
@@ -1616,18 +1672,29 @@ impl App {
                 }
                 None
             });
-            i.events.retain(|ev| !matches!(ev, egui::Event::Scroll(_)));
-            (dir, i.modifiers.ctrl)
+            let zoom: f32 = i
+                .events
+                .iter()
+                .filter_map(|ev| match ev {
+                    egui::Event::Zoom(f) => Some(f.ln()),
+                    _ => None,
+                })
+                .sum();
+            i.events
+                .retain(|ev| !matches!(ev, egui::Event::Scroll(_) | egui::Event::Zoom(_)));
+            (dir, zoom)
         });
 
-        let Some(dy) = scroll_y else { return };
+        // One wheel notch is ln 1.28 = 0.25; a trackpad's small steps add up.
+        self.zoom_wheel += zoom;
+        if self.zoom_wheel.abs() >= 0.2 {
+            let zoom_in = self.zoom_wheel > 0.0;
+            self.zoom_wheel -= 0.25_f32.copysign(self.zoom_wheel);
+            self.zoom(ctx, canvas, ZoomTo::Step(zoom_in));
+        }
 
-        if self.in_editor() && ctrl_held {
-            // Ctrl+scroll → zoom. Each notch changes zoom by 15%.
-            let factor = if dy > 0.0 { 1.15_f32 } else { 1.0 / 1.15 };
-            self.zoom = (self.zoom * factor).clamp(0.1, 10.0);
-        } else if !self.in_editor() {
-            // Viewer mode → navigate images.
+        let Some(dy) = scroll_y else { return };
+        if !self.in_editor() {
             self.navigate(dy < 0.0, ctx);
         }
     }
@@ -1698,6 +1765,10 @@ impl App {
             }
         }
 
+        if self.original_held {
+            hud::draw_tag(ui.painter(), canvas, "Original");
+        }
+
         if let Some((text, since)) = &self.toast.current {
             let alpha = hud::fade_alpha(*since, hud::TOAST_HOLD, now);
             hud::draw_toast(ui.painter(), canvas, text, alpha);
@@ -1715,11 +1786,12 @@ impl App {
     /// the Save As filename also ran its shortcut (Q started a quit), and the
     /// arrow keys moved to another image under an open delete dialog.
     fn process_keyboard(&mut self, ctx: &egui::Context) {
-        if self.modal.is_some()
+        let keyboard_taken = self.modal.is_some()
             || self.save_as_modal.is_some()
             || self.show_help
-            || ctx.wants_keyboard_input()
-        {
+            || ctx.wants_keyboard_input();
+        self.track_original_key(ctx, keyboard_taken);
+        if keyboard_taken {
             return;
         }
 
@@ -1732,6 +1804,34 @@ impl App {
                     self.run_action(binding.action, key, ctx);
                 }
             }
+        }
+    }
+
+    /// The original is on screen while Backslash is held in the editor. The
+    /// key is found by its place, not its character: on the Turkish Q layout
+    /// this machine uses, the key US keyboards print `\` on types a comma,
+    /// and `\` itself needs AltGr. Letting go, losing focus or a dialog
+    /// opening shows the edit again.
+    fn track_original_key(&mut self, ctx: &egui::Context, keyboard_taken: bool) {
+        let mut held = self.original_held;
+        ctx.input(|i| {
+            for ev in &i.events {
+                match ev {
+                    egui::Event::Key {
+                        key,
+                        physical_key,
+                        pressed,
+                        ..
+                    } if physical_key.unwrap_or(*key) == egui::Key::Backslash => held = *pressed,
+                    egui::Event::WindowFocused(false) => held = false,
+                    _ => {}
+                }
+            }
+        });
+        let held = held && self.in_editor() && !keyboard_taken;
+        if held != self.original_held {
+            self.original_held = held;
+            ctx.request_repaint();
         }
     }
 
@@ -1821,10 +1921,15 @@ impl App {
                 self.save_as_returning(ctx);
             }
             Action::CycleGuides => self.guides = self.guides.next(),
-            Action::ResetView => {
-                self.zoom = 1.0;
-                self.pan = egui::Vec2::ZERO;
+            // Held, not pressed: `track_original_key` follows it.
+            Action::ShowOriginal => {}
+            Action::ZoomToggle => self.zoom(ctx, self.canvas, ZoomTo::Toggle),
+            Action::ZoomFit => self.zoom(ctx, self.canvas, ZoomTo::Level(view::Zoom::Fit)),
+            Action::ZoomActual => {
+                self.zoom(ctx, self.canvas, ZoomTo::Level(view::Zoom::Scale(1.0)))
             }
+            Action::ZoomIn => self.zoom(ctx, self.canvas, ZoomTo::Step(true)),
+            Action::ZoomOut => self.zoom(ctx, self.canvas, ZoomTo::Step(false)),
         }
     }
 
@@ -1863,10 +1968,14 @@ fn window_title(name: Option<&str>, position: Option<(usize, usize)>, dirty: boo
 /// Ctrl+Shift+S also matched Ctrl+S and saved over the original instead of
 /// opening Save As, and Ctrl+Shift+Z undid instead of redoing. A plain key
 /// still ignores Shift, which some layouts need for digits (AZERTY), but not
-/// Ctrl or Alt.
+/// Ctrl or Alt; so does Ctrl on `+` and `=`, which need Shift to type on
+/// many layouts.
 fn consume_shortcut(i: &mut egui::InputState, mods: egui::Modifiers, key: egui::Key) -> bool {
+    let shifted_symbol = matches!(key, egui::Key::Plus | egui::Key::Equals);
     let fits = |pressed: &egui::Modifiers| {
-        if mods.command || mods.ctrl {
+        if (mods.command || mods.ctrl) && shifted_symbol {
+            !pressed.alt && pressed.matches_logically(mods)
+        } else if mods.command || mods.ctrl {
             pressed.matches_exact(mods)
         } else {
             !pressed.alt && pressed.matches_logically(mods)
@@ -2035,126 +2144,6 @@ fn draw_guides(ui: &egui::Ui, r: egui::Rect, guides: Guides) {
         let y = r.min.y + r.height() * t;
         p.line_segment([egui::pos2(r.min.x, y), egui::pos2(r.max.x, y)], STROKE);
     }
-}
-
-/// Pre-downsample `pixels` with Lanczos3 when `canvas_sz` would display the image
-/// at less than 50% of its native size. Returns the (possibly resampled) buffer
-/// and the output dimensions. Caller owns the buffer.
-///
-/// This eliminates the aliasing that GPU bilinear filtering produces on large
-/// images shown at small display sizes. The 50% threshold and 2× oversampling
-/// margin balance quality against CPU cost.
-fn lanczos_if_needed(pixels: &[u8], w: u32, h: u32, canvas_sz: egui::Vec2) -> (Vec<u8>, u32, u32) {
-    let fit = (canvas_sz.x / w as f32).min(canvas_sz.y / h as f32);
-    if fit >= 0.5 {
-        return (pixels.to_vec(), w, h);
-    }
-
-    // Target: 2× the display size for a quality margin above 1:1.
-    let target_w = ((w as f32 * fit * 2.0) as u32).max(1);
-    let target_h = ((h as f32 * fit * 2.0) as u32).max(1);
-
-    let Some(buf) = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(w, h, pixels.to_vec())
-    else {
-        return (pixels.to_vec(), w, h);
-    };
-
-    let resized = image::imageops::resize(
-        &buf,
-        target_w,
-        target_h,
-        image::imageops::FilterType::Lanczos3,
-    );
-    let (rw, rh) = resized.dimensions();
-    log!(
-        "[upload] Lanczos {}×{} → {}×{} (fit={:.2})",
-        w,
-        h,
-        rw,
-        rh,
-        fit
-    );
-    (resized.into_raw(), rw, rh)
-}
-
-fn image_copy(texture: &wgpu::Texture) -> wgpu::ImageCopyTexture<'_> {
-    wgpu::ImageCopyTexture {
-        texture,
-        mip_level: 0,
-        origin: wgpu::Origin3d::ZERO,
-        aspect: wgpu::TextureAspect::All,
-    }
-}
-
-fn upload_image_texture(
-    _ctx: &egui::Context,
-    frame: &mut eframe::Frame,
-    pixels: &[u8],
-    w: u32,
-    h: u32,
-    canvas_sz: egui::Vec2,
-    slot: &mut Option<ImageTexture>,
-) {
-    if w == 0 || h == 0 {
-        return;
-    }
-    let Some(rs) = frame.wgpu_render_state() else {
-        ::log::error!("[upload] wgpu render state unavailable");
-        return;
-    };
-
-    // High-quality downscale: pre-resample with Lanczos3 when the image is displayed
-    // at <50% of native size, eliminating GPU linear-filter aliasing.
-    let (downsampled, w, h) = lanczos_if_needed(pixels, w, h, canvas_sz);
-    let pixels = downsampled.as_slice();
-
-    let extent = wgpu::Extent3d {
-        width: w,
-        height: h,
-        depth_or_array_layers: 1,
-    };
-    let layout = wgpu::ImageDataLayout {
-        offset: 0,
-        bytes_per_row: Some(4 * w),
-        rows_per_image: Some(h),
-    };
-    // In-place update when dimensions match.
-    if let Some(it) = slot.as_ref().filter(|it| it.width == w && it.height == h) {
-        rs.queue
-            .write_texture(image_copy(&it.texture), pixels, layout, extent);
-        return;
-    }
-
-    // Unregister the old texture if dimensions changed.
-    if let Some(it) = slot.take() {
-        rs.renderer.write().free_texture(&it.texture_id);
-    }
-
-    let texture = rs.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("patina_image"),
-        size: extent,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    rs.queue
-        .write_texture(image_copy(&texture), pixels, layout, extent);
-
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let texture_id =
-        rs.renderer
-            .write()
-            .register_native_texture(&rs.device, &view, wgpu::FilterMode::Linear);
-
-    *slot = Some(ImageTexture {
-        texture,
-        texture_id,
-        width: w,
-        height: h,
-    });
 }
 
 // ── Save As modal ─────────────────────────────────────────────────────────────
@@ -2900,6 +2889,16 @@ fn main() {
         wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
             present_mode: eframe::wgpu::PresentMode::AutoVsync,
             power_preference: eframe::wgpu::PowerPreference::HighPerformance,
+            // egui-wgpu asks for 8192 px textures, smaller than a 45 MP
+            // frame's 8256 px width: ask for what the GPU has (16384 on
+            // desktop), so 100% is pixel-true for every common camera.
+            device_descriptor: std::sync::Arc::new(|adapter| {
+                let base = eframe::egui_wgpu::WgpuConfiguration::default().device_descriptor;
+                let mut d = base(adapter);
+                d.required_limits.max_texture_dimension_2d =
+                    adapter.limits().max_texture_dimension_2d;
+                d
+            }),
             ..Default::default()
         },
         ..Default::default()
@@ -2910,6 +2909,9 @@ fn main() {
         options,
         Box::new(move |cc| {
             ui::install_fonts(&cc.egui_ctx);
+            // Ctrl+= and Ctrl+- zoom the image; egui's own use of them scaled
+            // the whole interface instead.
+            cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
             egui_extras::install_image_loaders(&cc.egui_ctx);
             Box::new(app) as Box<dyn eframe::App>
         }),
@@ -3351,6 +3353,175 @@ mod keyboard_tests {
         app.enter_editor(&ctx);
         frame(&mut app, &ctx, vec![press(Key::I, Modifiers::NONE)]);
         assert!(!app.show_info);
+    }
+
+    // ── Judging an edit: zoom, the original, the histogram ───────────────────
+
+    /// Z goes to 100% and back, and a zoom stays on the next image: a burst
+    /// is checked for focus one frame after another.
+    #[test]
+    fn z_toggles_a_hundred_percent_and_the_next_image_keeps_it() {
+        let dir = TempDir::new("zoom");
+        let a = dir.jpeg("a.jpg");
+        let b = dir.jpeg("b.jpg");
+        let (mut app, ctx) = app_on(&a);
+        frame(&mut app, &ctx, vec![]);
+
+        frame(&mut app, &ctx, vec![press(Key::Z, Modifiers::NONE)]);
+        assert_eq!(app.view.zoom, view::Zoom::Scale(1.0));
+        assert_eq!(app.toast.current.as_ref().unwrap().0, "100%");
+
+        frame(
+            &mut app,
+            &ctx,
+            vec![press(Key::ArrowRight, Modifiers::NONE)],
+        );
+        pump_until(&mut app, &ctx, |app| app.current_path.as_ref() == Some(&b));
+        assert_eq!(app.view.zoom, view::Zoom::Scale(1.0), "kept on b.jpg");
+
+        frame(&mut app, &ctx, vec![press(Key::Z, Modifiers::NONE)]);
+        assert!(app.view.is_fit());
+    }
+
+    /// Ctrl+scroll arrives as a Zoom event; the editor used to wait for a
+    /// Scroll with Ctrl held, which never came. Ctrl+= is Ctrl+Shift+0 on
+    /// some layouts, so Shift does not stop it.
+    #[test]
+    fn ctrl_scroll_and_ctrl_plus_zoom_in_both_modes() {
+        let dir = TempDir::new("wheel");
+        let (mut app, ctx) = app_on(&dir.jpeg("photo.jpg")); // 16×8: Fit is 8000%
+        frame(&mut app, &ctx, vec![]);
+        let notch_out = egui::Event::Zoom((-50.0_f32 / 200.0).exp()); // as egui-winit sends
+        frame(&mut app, &ctx, vec![notch_out.clone()]);
+        assert_eq!(
+            app.view.zoom,
+            view::Zoom::Scale(8.0),
+            "one notch out of Fit"
+        );
+
+        app.enter_editor(&ctx);
+        frame(&mut app, &ctx, vec![notch_out]);
+        assert_eq!(app.view.zoom, view::Zoom::Scale(4.0), "and in the editor");
+
+        let shift_ctrl = Modifiers {
+            shift: true,
+            ..WIN_CTRL
+        };
+        frame(&mut app, &ctx, vec![press(Key::Plus, shift_ctrl)]);
+        assert_eq!(
+            app.view.zoom,
+            view::Zoom::Scale(8.0),
+            "Ctrl+Shift++ zooms in"
+        );
+        frame(&mut app, &ctx, vec![press(Key::Num0, WIN_CTRL)]);
+        assert!(app.view.is_fit(), "Ctrl+0 fits");
+    }
+
+    /// Render the committed edit on the edit thread and take its result, as
+    /// the app's frames do.
+    fn render_edit(app: &mut App) {
+        let p = app.editor_state.as_ref().unwrap().undo.current().clone();
+        app.launch_async_edit(p);
+        for _ in 0..500 {
+            if app.poll_edit_result() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("the edit never came back");
+    }
+
+    fn backslash(pressed: bool) -> egui::Event {
+        // What the Turkish Q layout reports for the key US keyboards print
+        // `\` on: a comma, at the Backslash position.
+        egui::Event::Key {
+            key: Key::Comma,
+            physical_key: Some(Key::Backslash),
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    /// Held, the original is on screen and says so; let go, the edit is back.
+    #[test]
+    fn holding_backslash_shows_the_original_on_any_layout() {
+        let dir = TempDir::new("original");
+        let (mut app, ctx) = app_on(&dir.jpeg("photo.jpg"));
+        frame(&mut app, &ctx, vec![backslash(true)]);
+        assert!(!app.original_held, "the viewer already shows the original");
+
+        edit(&mut app, &ctx);
+        render_edit(&mut app);
+        let source = app.current_image.as_ref().unwrap() as *const _;
+        assert!(
+            !std::ptr::eq(app.shown_image().unwrap(), source),
+            "the edit is shown"
+        );
+
+        frame(&mut app, &ctx, vec![backslash(true)]);
+        assert!(app.original_held);
+        assert!(
+            std::ptr::eq(app.shown_image().unwrap(), source),
+            "the original is shown"
+        );
+        assert!(painted_text(&mut app, &ctx).contains(&"Original".to_string()));
+
+        frame(&mut app, &ctx, vec![backslash(false)]);
+        assert!(!app.original_held, "let go: the edit again");
+        assert!(!painted_text(&mut app, &ctx).contains(&"Original".to_string()));
+
+        frame(&mut app, &ctx, vec![backslash(true)]);
+        frame(&mut app, &ctx, vec![egui::Event::WindowFocused(false)]);
+        assert!(
+            !app.original_held,
+            "a key released elsewhere is not stuck down"
+        );
+    }
+
+    /// The histogram made the rail taller; it still fits a 1200 px window,
+    /// as the rail's doc says: the last row's text ends above the bottom.
+    #[test]
+    fn the_rail_with_its_histogram_fits_a_1200_px_window() {
+        let dir = TempDir::new("railfit");
+        let (mut app, ctx) = app_on(&dir.jpeg("photo.jpg"));
+        app.enter_editor(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1200.0));
+        let mut bottom = 0.0_f32;
+        for _ in 0..2 {
+            let raw = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let out = ctx.run(raw, |ctx| app.draw_ui(ctx));
+            let rail_x = screen.max.x - ui::rail_width(screen.width());
+            bottom = out
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.pos.x > rail_x => Some(t.pos.y + t.galley.size().y),
+                    _ => None,
+                })
+                .fold(0.0, f32::max);
+        }
+        assert!(
+            bottom < screen.max.y,
+            "the rail's last text ends at {bottom}"
+        );
+    }
+
+    /// The rail's histogram follows what the canvas shows.
+    #[test]
+    fn the_histogram_is_of_the_edit_and_of_the_original_while_held() {
+        let dir = TempDir::new("hist");
+        let (mut app, ctx) = app_on(&dir.jpeg("photo.jpg"));
+        edit(&mut app, &ctx);
+        render_edit(&mut app);
+        let es = app.editor_state.as_ref().unwrap();
+        let src = editor::histogram(app.current_image.as_ref().unwrap());
+        assert_eq!(es.source_histogram, src);
+        assert_eq!(es.histogram, editor::histogram(&es.display));
+        assert_ne!(es.histogram, src, "exposure +0.5 moved the levels");
     }
 
     // ── Closing the window ────────────────────────────────────────────────────

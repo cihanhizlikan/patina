@@ -3,7 +3,7 @@
 //! Design tokens and layout follow the handoff README §1–§16.
 //! All sizing derives from a single U-unit computed from window height.
 
-use crate::editor::{EditParams, Preset};
+use crate::editor::{EditParams, Histogram, Preset};
 use egui::{
     Color32, Context, Frame, Margin, Rect, Response, RichText, Rounding, ScrollArea, Sense, Stroke,
     TextureHandle, TextureOptions, Ui, Vec2,
@@ -76,6 +76,12 @@ pub mod tok {
     pub const GUIDE: Color32 = Color32::from_rgba_premultiplied(60, 60, 60, 60);
     /// The outline that keeps a label dot visible on any photo.
     pub const ON_PHOTO_RING: Color32 = Color32::from_rgba_premultiplied(80, 80, 80, 80);
+
+    /// Histogram channels. Premultiplied with zero alpha, egui adds them, so
+    /// where all three overlap reads a quiet grey, not a muddy brown.
+    pub const HIST_R: Color32 = Color32::from_rgba_premultiplied(96, 30, 30, 0);
+    pub const HIST_G: Color32 = Color32::from_rgba_premultiplied(30, 96, 30, 0);
+    pub const HIST_B: Color32 = Color32::from_rgba_premultiplied(30, 30, 96, 0);
 
     #[cfg(test)]
     mod tests {
@@ -571,6 +577,8 @@ pub struct PanelInput<'a> {
     /// image it was lit green and meant nothing.
     pub dirty: bool,
     pub icons: &'a Icons,
+    /// Of what the canvas shows: the edit, or the original while it is held.
+    pub histogram: &'a Histogram,
 }
 
 /// The editor rail, organised around the edit: one toolbar, then presets,
@@ -583,6 +591,7 @@ pub fn draw_panel(ctx: &Context, input: PanelInput<'_>) -> PanelAction {
         can_redo,
         dirty,
         icons,
+        histogram,
     } = input;
     let mut action = PanelAction::default();
     let t = T::new(ctx);
@@ -594,6 +603,8 @@ pub fn draw_panel(ctx: &Context, input: PanelInput<'_>) -> PanelAction {
         .show(ctx, |ui| {
             ui.set_width(t.rail_w);
             toolbar(ui, &t, icons, can_undo, can_redo, dirty, &mut action);
+            hairline(ui);
+            draw_histogram(ui, &t, histogram);
             hairline(ui);
 
             ScrollArea::vertical()
@@ -615,6 +626,45 @@ pub fn draw_panel(ctx: &Context, input: PanelInput<'_>) -> PanelAction {
                 });
         });
     action
+}
+
+/// The rail head: red, green and blue levels, 0 on the left, 255 on the
+/// right. All three share one scale, the tallest level between the ends: a
+/// clipped spike at 0 or 255 runs to the top instead of flattening the rest.
+fn draw_histogram(ui: &mut Ui, t: &T, h: &Histogram) {
+    let height = (t.u * 3.0).round();
+    let (row, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), height + 2.0 * t.gap),
+        Sense::hover(),
+    );
+    let r = row.shrink2(Vec2::new(t.row_x, t.gap));
+    let p = ui.painter();
+    p.rect_filled(r, Rounding::same(t.radius), SURFACE_SUNKEN);
+    let peak = [&h.r, &h.g, &h.b]
+        .iter()
+        .flat_map(|c| c[1..255].iter())
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .max(1) as f32;
+    let bin_w = r.width() / 256.0;
+    for (bins, colour) in [(&h.r, HIST_R), (&h.g, HIST_G), (&h.b, HIST_B)] {
+        let mut mesh = egui::Mesh::default();
+        for (i, &n) in bins.iter().enumerate() {
+            let v = (n as f32 / peak).min(1.0);
+            if v > 0.0 {
+                let x = r.min.x + i as f32 * bin_w;
+                mesh.add_colored_rect(
+                    Rect::from_min_max(
+                        egui::pos2(x, r.max.y - v * r.height()),
+                        egui::pos2(x + bin_w, r.max.y),
+                    ),
+                    colour,
+                );
+            }
+        }
+        p.add(mesh);
+    }
 }
 
 /// Undo and Redo on the left; Save As, Save and its menu on the right.

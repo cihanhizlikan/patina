@@ -7,7 +7,8 @@ loader, navigator and path rules.
 ## Layout
 - `src/main.rs` — the `App`: window and viewport state, background decode, preload and metadata threads, directory
   watcher, texture upload, canvas, modals (save-as, delete, rename, error, help), save and export.
-- `src/editor.rs` — `EditParams`, the undo stack and `apply_edits`, the fixed-order pixel pipeline.
+- `src/view.rs` — zoom and layout on the canvas, and the GPU textures (Lanczos at Fit, mips when zoomed).
+- `src/editor.rs` — `EditParams`, the undo stack and `apply_edits`, the fixed-order pixel pipeline, the histogram.
 - `src/ui.rs` — the editor side panel: design tokens, icons, preset tiles, sliders.
 - `src/loader.rs` — decoding to straight RGBA8, magic-byte sniffing, wrong-extension recovery, RAW.
 - `src/nav.rs` — the sibling-file list for one directory, natural sort, wraparound navigation.

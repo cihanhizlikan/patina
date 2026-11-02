@@ -47,7 +47,13 @@ pub enum Action {
     Save,
     SaveAs,
     CycleGuides,
-    ResetView,
+    /// Held, not pressed; `App::track_original_key` follows it by key position.
+    ShowOriginal,
+    ZoomToggle,
+    ZoomFit,
+    ZoomActual,
+    ZoomIn,
+    ZoomOut,
 }
 
 pub struct Binding {
@@ -171,11 +177,41 @@ pub const KEYMAP: &[Binding] = &[
     },
     Binding {
         mode: Mode::Editor,
-        keys: &[(CTRL, Key::Num0), (CTRL, Key::Space)],
-        action: Action::ResetView,
-        what: "Reset zoom and pan",
+        keys: &[(NO, Key::Backslash)],
+        action: Action::ShowOriginal,
+        what: "Hold to see the original",
     },
     // ── Both ──────────────────────────────────────────────────────────────────
+    Binding {
+        mode: Mode::Both,
+        keys: &[(NO, Key::Z)],
+        action: Action::ZoomToggle,
+        what: "Fit, or 100% where the pointer is",
+    },
+    Binding {
+        mode: Mode::Both,
+        keys: &[(CTRL, Key::Plus), (CTRL, Key::Equals)],
+        action: Action::ZoomIn,
+        what: "Zoom in",
+    },
+    Binding {
+        mode: Mode::Both,
+        keys: &[(CTRL, Key::Minus)],
+        action: Action::ZoomOut,
+        what: "Zoom out",
+    },
+    Binding {
+        mode: Mode::Both,
+        keys: &[(CTRL, Key::Num1)],
+        action: Action::ZoomActual,
+        what: "100%: one image pixel per screen pixel",
+    },
+    Binding {
+        mode: Mode::Both,
+        keys: &[(CTRL, Key::Num0)],
+        action: Action::ZoomFit,
+        what: "Fit to the window",
+    },
     Binding {
         mode: Mode::Both,
         keys: &[(NO, Key::F), (NO, Key::F11)],
@@ -211,8 +247,8 @@ pub const KEYMAP: &[Binding] = &[
 /// Mouse gestures, listed in the help after the keys. They have no handler
 /// here: the canvas and the sliders handle them.
 pub const MOUSE_HELP: &[(Mode, &str, &str)] = &[
-    (Mode::Editor, "Ctrl+Scroll", "Zoom in or out"),
-    (Mode::Editor, "Drag", "Pan"),
+    (Mode::Both, "Ctrl+Scroll", "Zoom in or out at the pointer"),
+    (Mode::Both, "Drag", "Move a zoomed image"),
     (Mode::Editor, "Double-click", "Reset a slider"),
 ];
 
@@ -262,6 +298,9 @@ fn key_name(k: Key) -> &'static str {
         Key::Num3 => "3",
         Key::Num4 => "4",
         Key::Num5 => "5",
+        Key::Plus => "+",
+        Key::Equals => "=",
+        Key::Minus => "\u{2212}",
         _ => k.name(),
     }
 }

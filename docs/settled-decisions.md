@@ -8,9 +8,9 @@ Patina began as a copy of Devoid Viewer (the first commit ships `devoid.ico`, re
 `.gitignore` still says *"Added by Devoid Viewer build process"*). Decisions inherited from it are marked so.
 
 ## Rendering is GPU: eframe + wgpu, zero-copy textures
-The decoded image is uploaded to a `wgpu::Texture` and registered with egui through `register_native_texture`
-(`src/main.rs` module doc), so egui never holds a copy of the pixels. Downscaling for display is Lanczos on the CPU
-(`lanczos_if_needed`). This is the opposite of Devoid Viewer's CPU blit, and deliberately so: Patina is an editor
+The decoded image is uploaded to a `wgpu::Texture` and registered with egui (`src/view.rs`), so egui never holds
+a copy of the pixels. At Fit, downscaling for display is Lanczos on the CPU (`lanczos_if_needed`); zoomed, the
+texture is full resolution with a box-filtered mip chain (2026-11-02, below). This is the opposite of Devoid Viewer's CPU blit, and deliberately so: Patina is an editor
 with live adjustments, not a minimal viewer. **The reason for wgpu over egui's glow backend was not recorded** —
 maintainer to fill in.
 
@@ -182,6 +182,31 @@ already moved past is dropped.
 dragged over. **The editor needs an image**: with none, E says "Open an image to edit it" rather than opening a
 rail of controls with nothing to act on. What would move this: Patina being launched mainly to edit (an
 "Edit with Patina" verb), where E — or launch — opening a file picker would earn its place.
+
+## Judging an edit: the original on Backslash, a pixel-true 100%, a histogram (2026-11-02)
+**Backslash shows the original while it is held**, in the editor, with an *Original* tag on the canvas; letting
+go, losing focus or a dialog opening shows the edit again. The key is read **by position** (egui's
+`physical_key`), not by character: on the Turkish Q layout of the maintainer's machine that key types a comma and
+`\` needs AltGr. **The original keeps its own texture** (`original_tex`, the viewer's), and the edit gets a second
+one: re-uploading on each flick cost 680–743 ms (`patina.log`, 3840×2400 and 6400×4000). Leaving the editor no
+longer re-uploads either.
+**Zoom works in both modes** and is Fit or a scale in *physical* pixels per image pixel (`src/view.rs`), so 100%
+is one image pixel on one screen pixel at any display scale; the image's corner is snapped to the pixel grid, and
+from 100% up the texture is sampled nearest, so float error cannot blend two pixels. Z toggles Fit ↔ 100% at the
+pointer, Ctrl+scroll / Ctrl+= / Ctrl+- step through 12½–800% with Fit as a stop, Ctrl+1 is 100%, Ctrl+0 Fit; Ctrl+Space
+is gone. Zooming keeps the point under the pointer still; a zoomed image is dragged and never leaves an
+empty margin. **The zoom is kept across images**, so a burst is checked for focus frame after frame.
+**Zoomed textures are full resolution with a mip chain** made on the CPU by 2×2 box averages (9–11 ms for 24 MP,
+`mip_chain_cost`), so steps between Fit and 100% do not alias; Fit keeps its Lanczos texture. **`main` asks the GPU
+for its own largest texture**: egui-wgpu asks for 8192 px, narrower than a 45 MP frame's 8256. Only an image past
+the GPU's limit is shrunk to it and loses pixel-true 100%.
+Two egui defaults were wrong for this and are off: **Ctrl+scroll arrives as a `Zoom` event**, not `Scroll`, so the
+editor's old Ctrl+scroll zoom never ran; and **egui's keyboard zoom** scaled the whole interface on Ctrl+= / Ctrl+-.
+Ctrl on `+` and `=` ignores Shift, which many layouts need to type them.
+**The histogram** heads the rail: R, G and B added together (grey where they overlap), on one scale set by the
+tallest level between the ends so a clipped spike does not flatten the rest. It is made on the edit thread with
+each result, and shows the original's while Backslash is held. The rail with it still ends 322 px above the bottom
+of a 1200 px window (`the_rail_with_its_histogram_fits_a_1200_px_window`).
 
 ## Paths are used as given — no `canonicalize` (inherited)
 `std::fs::canonicalize` on Windows returns a verbatim `\\?\C:\…` path, which breaks paths handed over by

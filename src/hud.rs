@@ -161,6 +161,21 @@ pub fn draw_toast(p: &Painter, canvas: Rect, text: &str, alpha: f32) {
     p.galley(rect.center() - galley.size() * 0.5, galley, Color32::WHITE);
 }
 
+/// A label pinned to the canvas's top-left corner while it is true, such as
+/// `Original` while Backslash is held: the screen says it is not the edit.
+pub fn draw_tag(p: &Painter, canvas: Rect, text: &str) {
+    let galley = p.layout_no_wrap(text.to_owned(), FontId::proportional(ui::BODY), tok::TEXT_1);
+    let size = galley.size() + Vec2::new(24.0, 12.0);
+    let rect = Rect::from_min_size(canvas.min + Vec2::splat(14.0), size);
+    p.rect(
+        rect,
+        Rounding::same(size.y * 0.5),
+        tok::RAISED,
+        Stroke::new(1.0, tok::BORDER_STRONG),
+    );
+    p.galley(rect.center() - galley.size() * 0.5, galley, Color32::WHITE);
+}
+
 /// An indeterminate 2 px bar along the top of the canvas: a segment that
 /// sweeps across every 1.2 s.
 pub fn draw_loading_bar(p: &Painter, canvas: Rect, elapsed: Duration) {

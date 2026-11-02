@@ -263,14 +263,21 @@ pub struct EditorState {
     pub display: DecodedImage,
     /// True when params changed and `display` needs recomputing.
     pub dirty: bool,
+    /// Of `display`, made with it on the edit thread.
+    pub histogram: Histogram,
+    /// Of the source, for while the original is held up.
+    pub source_histogram: Histogram,
 }
 
 impl EditorState {
     pub fn new(original: &DecodedImage) -> Self {
+        let histogram = histogram(original);
         Self {
             undo: UndoStack::new(),
             display: original.clone(),
             dirty: false,
+            source_histogram: histogram.clone(),
+            histogram,
         }
     }
 
@@ -302,6 +309,54 @@ impl EditorState {
         self.dirty = true;
         self.sync(original);
     }
+}
+
+// ── Histogram ─────────────────────────────────────────────────────────────────
+
+/// How many pixels sit at each level, 0–255, per channel, in the first
+/// frame. Fully transparent pixels are not counted: they are not seen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Histogram {
+    pub r: [u32; 256],
+    pub g: [u32; 256],
+    pub b: [u32; 256],
+}
+
+impl Default for Histogram {
+    fn default() -> Self {
+        Histogram {
+            r: [0; 256],
+            g: [0; 256],
+            b: [0; 256],
+        }
+    }
+}
+
+pub fn histogram(img: &DecodedImage) -> Histogram {
+    let Some(frame) = img.frames.first() else {
+        return Histogram::default();
+    };
+    frame
+        .pixels
+        .par_chunks(4 * 64 * 1024)
+        .fold(Histogram::default, |mut h, chunk| {
+            for px in chunk.chunks_exact(4) {
+                if px[3] != 0 {
+                    h.r[px[0] as usize] += 1;
+                    h.g[px[1] as usize] += 1;
+                    h.b[px[2] as usize] += 1;
+                }
+            }
+            h
+        })
+        .reduce(Histogram::default, |mut a, b| {
+            for i in 0..256 {
+                a.r[i] += b.r[i];
+                a.g[i] += b.g[i];
+                a.b[i] += b.b[i];
+            }
+            a
+        })
 }
 
 // ── Public geometry helper (used by lossless JPEG path in main.rs) ───────────
@@ -878,6 +933,24 @@ fn box_blur_3x3(px: &[u8], w: u32, h: u32) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::loader::{DecodedImage, Frame};
+
+    /// Every visible pixel counted once per channel, at its own level; the
+    /// count runs in parallel chunks, so an image over one chunk is used.
+    #[test]
+    fn the_histogram_counts_each_visible_pixel_at_its_level() {
+        let mut img = solid(600, 300, 200, 10, 0);
+        img.frames[0].pixels[..4].copy_from_slice(&[7, 7, 7, 0]); // transparent
+        let h = histogram(&img);
+        let n = 600 * 300 - 1;
+        assert_eq!(h.r[200], n);
+        assert_eq!(h.g[10], n);
+        assert_eq!(h.b[0], n);
+        assert_eq!(
+            h.r.iter().sum::<u32>(),
+            n,
+            "the transparent one is not counted"
+        );
+    }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

@@ -40,7 +40,8 @@ tiles. The viewer keeps its zero-chrome canvas. The editor rail is reorganised a
 
 ## Judging an edit
 
-7. Hold Backslash for the original. Viewer zoom with a pixel-true 100%. A small histogram in the rail head.
+7. ~~**Judging an edit.**~~ Done — Backslash holds up the original, zoom with a pixel-true 100% in both modes, a
+   histogram in the rail head; see settled-decisions.md.
 
 ## Working through a set
 
