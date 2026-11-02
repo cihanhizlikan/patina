@@ -95,6 +95,50 @@ pub fn sidecar_path(image_path: &Path) -> PathBuf {
     full
 }
 
+/// The sidecars that go to the Recycle Bin with `image_path`: its
+/// full-filename one, and a `photo.xmp` when no other file in the folder
+/// shares the stem — beside a `photo.jpg`, a RAW's `photo.xmp` is still the
+/// JPEG's too.
+pub fn sidecars_of(image_path: &Path) -> Vec<PathBuf> {
+    let full = full_name_sidecar(image_path);
+    let stem_xmp = image_path.with_extension("xmp");
+    let mut out = Vec::new();
+    if full.is_file() {
+        out.push(full.clone());
+    }
+    if stem_xmp != full && stem_xmp.is_file() && !stem_is_shared(image_path, &stem_xmp) {
+        out.push(stem_xmp);
+    }
+    out
+}
+
+/// Whether a file other than `image_path` and `stem_xmp` has the same stem.
+/// An unreadable folder counts as shared, so nothing is deleted on a guess.
+fn stem_is_shared(image_path: &Path, stem_xmp: &Path) -> bool {
+    let stem = image_path.file_stem().unwrap_or_default().to_string_lossy();
+    let Some(Ok(entries)) = image_path.parent().map(std::fs::read_dir) else {
+        return true;
+    };
+    entries.flatten().map(|e| e.path()).any(|p| {
+        p != image_path
+            && p != stem_xmp
+            && p.file_stem()
+                .is_some_and(|s| s.to_string_lossy().eq_ignore_ascii_case(&stem))
+    })
+}
+
+/// After `old` was renamed to `new`, take its full-filename sidecar along.
+/// A `photo.xmp` stays: the rename keeps the stem (it only corrects the
+/// extension), and the file may be a RAW's. An existing sidecar under the
+/// new name is never replaced.
+pub fn rename_sidecar(old: &Path, new: &Path) -> std::io::Result<()> {
+    let from = full_name_sidecar(old);
+    if !from.is_file() {
+        return Ok(());
+    }
+    crate::rename_no_replace(&from, &full_name_sidecar(new))
+}
+
 /// `photo.jpg` → `photo.jpg.xmp`: unlike `photo.xmp`, it cannot be shared
 /// by `photo.jpg` and `photo.png`.
 fn full_name_sidecar(image_path: &Path) -> PathBuf {
@@ -624,6 +668,72 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&xmp).unwrap(),
             build_xmp_packet(0, "")
+        );
+    }
+
+    fn touch(path: &Path) {
+        std::fs::write(path, b"x").unwrap();
+    }
+
+    #[test]
+    fn a_deleted_image_takes_its_own_sidecar_and_an_unshared_stem_one() {
+        let dir = TempDir::new("sidecars-of");
+        let raw = dir.0.join("photo.CR2");
+        touch(&raw);
+        touch(&dir.0.join("photo.CR2.xmp"));
+        touch(&dir.0.join("photo.xmp"));
+        touch(&dir.0.join("other.jpg"));
+
+        assert_eq!(
+            sidecars_of(&raw),
+            vec![dir.0.join("photo.CR2.xmp"), dir.0.join("photo.xmp")]
+        );
+    }
+
+    #[test]
+    fn a_stem_sidecar_shared_with_another_file_stays() {
+        let dir = TempDir::new("sidecars-shared");
+        let jpg = dir.0.join("photo.jpg");
+        touch(&jpg);
+        touch(&dir.0.join("photo.CR2"));
+        touch(&dir.0.join("photo.xmp"));
+
+        assert_eq!(sidecars_of(&jpg), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn a_renamed_image_takes_its_sidecar_and_leaves_a_stem_one() {
+        let dir = TempDir::new("rename-sidecar");
+        let (old, new) = (dir.0.join("photo.jpg"), dir.0.join("photo.png"));
+        std::fs::write(dir.0.join("photo.jpg.xmp"), DARKTABLE).unwrap();
+        touch(&dir.0.join("photo.xmp"));
+
+        rename_sidecar(&old, &new).unwrap();
+
+        assert!(!dir.0.join("photo.jpg.xmp").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join("photo.png.xmp")).unwrap(),
+            DARKTABLE
+        );
+        assert!(dir.0.join("photo.xmp").exists());
+    }
+
+    #[test]
+    fn a_renamed_image_never_replaces_a_sidecar_under_the_new_name() {
+        let dir = TempDir::new("rename-sidecar-taken");
+        let (old, new) = (dir.0.join("photo.jpg"), dir.0.join("photo.png"));
+        std::fs::write(dir.0.join("photo.jpg.xmp"), DARKTABLE).unwrap();
+        std::fs::write(dir.0.join("photo.png.xmp"), "already here").unwrap();
+
+        assert!(rename_sidecar(&old, &new).is_err());
+
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join("photo.jpg.xmp")).unwrap(),
+            DARKTABLE
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join("photo.png.xmp")).unwrap(),
+            "already here"
         );
     }
 

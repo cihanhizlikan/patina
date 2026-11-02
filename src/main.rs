@@ -2884,6 +2884,14 @@ fn apply_modal_action(app: &mut App, action: ModalAction) {
                             app.toast
                                 .show(format!("Renamed to {}", name.to_string_lossy()));
                         }
+                        if let Err(e) = xmp::rename_sidecar(&old, &new) {
+                            app.pending_error = Some(format!(
+                                "Renamed to {}, but its rating and label stayed in {}.xmp:\n{e}",
+                                new.display(),
+                                old.display()
+                            ));
+                        }
+                        app.labels = xmp::read_labels(&new);
                         app.current_path = Some(new);
                     }
                     Err(e) => {
@@ -2936,8 +2944,13 @@ impl PanelActionExt for PanelAction {
 /// abort on panic, so an uncaught one would end only the delete thread: no
 /// `Msg::Deleted`, and `deleting` stuck at true would block every later
 /// delete. Caught here, it becomes an error the user sees.
+///
+/// The image's sidecars go in the same operation (`xmp::sidecars_of`), so
+/// its rating waits in the Recycle Bin beside it instead of being orphaned.
 fn move_to_trash(path: &Path) -> Result<(), String> {
-    std::panic::catch_unwind(|| trash::delete(path))
+    let mut paths = vec![path.to_path_buf()];
+    paths.extend(xmp::sidecars_of(path));
+    std::panic::catch_unwind(|| trash::delete_all(&paths))
         .map_err(|_| "the Recycle Bin could not be reached".to_string())?
         .map_err(|e| e.to_string())
 }
@@ -3449,6 +3462,12 @@ mod keyboard_tests {
         let dir = TempDir::new("delete-disk");
         let named = dir.jpeg("patina-delete-test-a.jpg");
         let other = dir.jpeg("patina-delete-test-b.jpg");
+        let rated = ImageLabels {
+            rating: 2,
+            colour: ColourLabel::None,
+        };
+        xmp::write_labels(&named, &rated).unwrap();
+        xmp::write_labels(&other, &rated).unwrap();
         let (mut app, ctx) = app_on(&named);
 
         frame(&mut app, &ctx, vec![press(Key::Delete, Modifiers::NONE)]);
@@ -3463,7 +3482,12 @@ mod keyboard_tests {
         assert_eq!(path, named);
         assert_eq!(result, Ok(()));
         assert!(!named.exists(), "the named file went to the Recycle Bin");
+        assert!(
+            !xmp::sidecar_path(&named).exists(),
+            "its sidecar went with it"
+        );
         assert!(other.exists(), "the one on screen did not");
+        assert_eq!(xmp::read_labels(&other), rated, "nor did its sidecar");
         assert_eq!(
             app.current_path.as_ref(),
             Some(&other),
@@ -4097,6 +4121,36 @@ mod keyboard_tests {
 
         assert!(!old.exists() && new.exists());
         assert_eq!(app.current_path.as_ref(), Some(&new));
+    }
+
+    /// The rating set on `photo.jpg` is still there once it is `photo.png`.
+    #[test]
+    fn rename_takes_the_rating_along() {
+        let dir = TempDir::new("rename-rating");
+        let old = dir.0.join("photo.jpg");
+        image::RgbImage::from_pixel(4, 4, image::Rgb([1, 2, 3]))
+            .save_with_format(&old, image::ImageFormat::Png)
+            .unwrap();
+        let rated = ImageLabels {
+            rating: 4,
+            colour: ColourLabel::Blue,
+        };
+        xmp::write_labels(&old, &rated).unwrap();
+        let new = dir.0.join("photo.png");
+        let (mut app, ctx) = app_on(&old);
+        app.modal = Some(ModalDialog::OfferRename {
+            old_path: old.clone(),
+            new_path: new.clone(),
+            old_ext: "jpg".into(),
+            new_ext: "png".into(),
+        });
+
+        frame(&mut app, &ctx, vec![press(Key::Enter, Modifiers::NONE)]);
+
+        assert!(!dir.0.join("photo.jpg.xmp").exists());
+        assert!(dir.0.join("photo.png.xmp").is_file());
+        assert_eq!(xmp::read_labels(&new), rated);
+        assert_eq!(app.labels, rated);
     }
 
     // ── Title, keymap and guides ──────────────────────────────────────────────

@@ -98,11 +98,21 @@ a rating set in Lightroom on a RAW was invisible to it, and Patina's to Lightroo
 `photo.jpg.xmp` if it exists, else `photo.xmp` if that exists, else `photo.jpg.xmp`, which is created on the first
 write. The full-filename name wins when both exist because only it cannot belong to another file. **A RAW+JPEG
 pair with a Lightroom `photo.xmp` and no `photo.jpg.xmp` shares one rating**: rating either one edits the RAW's
-sidecar in place, as Lightroom treats the pair as one shot. **A `photo.xmp` is never deleted**, even when it is
-exactly Patina's packet and the labels are cleared, since it may be the RAW's. Tests in `src/xmp.rs` check the
+sidecar in place, as Lightroom treats the pair as one shot. **Clearing the labels never deletes a `photo.xmp`**,
+even when it is exactly Patina's packet, since it may be the RAW's. Tests in `src/xmp.rs` check the
 bytes on disk for each case. What would move this: a folder where `photo.jpg` and `photo.png` are different
 pictures and a tool wrote `photo.xmp` for one of them; telling them apart needs the sidecar to name its file,
 which Lightroom's does not.
+
+## A sidecar follows its image through a rename and a delete (2026-11-03)
+Before, both left it behind: the wrong-extension rename turned `photo.jpg` into `photo.png` and the rating stayed in
+`photo.jpg.xmp`, unread; a delete orphaned the sidecar beside the hole. **Rename** now moves the full-filename
+sidecar too, never over an existing one (a failure says where the rating stayed); a `photo.xmp` stays, since the
+rename keeps the stem. **Delete** sends the image and its sidecars to the Recycle Bin in one `trash::delete_all`:
+the full-filename one, and a `photo.xmp` only when no other file in the folder shares the stem — beside
+`photo.jpg`, a RAW's `photo.xmp` still belongs to the JPEG. An unreadable folder counts as shared. Tests:
+`rename_takes_the_rating_along`, the `sidecars_of` and `rename_sidecar` tests in `src/xmp.rs`, and the ignored
+`deletes_the_named_file_on_disk`, run against the real Recycle Bin for this change.
 
 ## A sidecar Patina did not write is edited, never replaced (2026-11-01)
 A sidecar from darktable (same `photo.jpg.xmp` name) or another tool holds edit history, develop settings and
