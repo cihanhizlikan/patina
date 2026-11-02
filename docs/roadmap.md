@@ -45,7 +45,8 @@ tiles. The viewer keeps its zero-chrome canvas. The editor rail is reorganised a
 
 ## Working through a set
 
-8. Arrows, 0–5 and L in the editor too. Copy and paste edits between images. Direct label keys 6–9.
+8. ~~**Working through a set.**~~ Done — arrows, 0–5, L and 6–9 in the editor too (an arrow asks to save first),
+   Ctrl+C / Ctrl+V of the look between images; see settled-decisions.md.
 
 ## Open decisions, after the UI
 

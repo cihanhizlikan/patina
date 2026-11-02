@@ -4,6 +4,7 @@
 //! drawn from it, so the two cannot disagree. Before, they were written
 //! separately and the help had drifted: it left out the 0–5 ratings and L.
 
+use crate::xmp::ColourLabel;
 use egui::{Key, Modifiers};
 
 /// Where a binding works.
@@ -31,6 +32,12 @@ pub enum Action {
     /// The digit pressed is the rating; 0 clears it.
     Rate,
     CycleLabel,
+    /// 6–9: red, yellow, green, blue; the label already set clears it.
+    SetLabel,
+    /// Ctrl+C and Ctrl+V reach the app as egui's Copy and Paste events, not
+    /// key presses (egui-winit turns them); these rows are for the help.
+    CopyEdit,
+    PasteEdit,
     EnterEditor,
     LeaveEditor,
     Slideshow,
@@ -74,46 +81,6 @@ const CTRL_SHIFT: Modifiers = Modifiers {
 /// In the order the help lists them.
 pub const KEYMAP: &[Binding] = &[
     // ── Viewer ────────────────────────────────────────────────────────────────
-    Binding {
-        mode: Mode::Viewer,
-        keys: &[
-            (NO, Key::ArrowRight),
-            (NO, Key::ArrowDown),
-            (NO, Key::PageDown),
-        ],
-        action: Action::Next,
-        what: "Next image",
-    },
-    Binding {
-        mode: Mode::Viewer,
-        keys: &[(NO, Key::ArrowLeft), (NO, Key::ArrowUp), (NO, Key::PageUp)],
-        action: Action::Prev,
-        what: "Previous image",
-    },
-    Binding {
-        mode: Mode::Viewer,
-        keys: &[
-            (NO, Key::Num1),
-            (NO, Key::Num2),
-            (NO, Key::Num3),
-            (NO, Key::Num4),
-            (NO, Key::Num5),
-        ],
-        action: Action::Rate,
-        what: "Rate one to five stars",
-    },
-    Binding {
-        mode: Mode::Viewer,
-        keys: &[(NO, Key::Num0)],
-        action: Action::Rate,
-        what: "Clear the rating",
-    },
-    Binding {
-        mode: Mode::Viewer,
-        keys: &[(NO, Key::L)],
-        action: Action::CycleLabel,
-        what: "Next colour label",
-    },
     Binding {
         mode: Mode::Viewer,
         keys: &[(NO, Key::E)],
@@ -181,7 +148,70 @@ pub const KEYMAP: &[Binding] = &[
         action: Action::ShowOriginal,
         what: "Hold to see the original",
     },
+    Binding {
+        mode: Mode::Editor,
+        keys: &[(CTRL, Key::C)],
+        action: Action::CopyEdit,
+        what: "Copy the edit (not its rotation or flip)",
+    },
     // ── Both ──────────────────────────────────────────────────────────────────
+    Binding {
+        mode: Mode::Both,
+        keys: &[
+            (NO, Key::ArrowRight),
+            (NO, Key::ArrowDown),
+            (NO, Key::PageDown),
+        ],
+        action: Action::Next,
+        what: "Next image (the editor asks to save first)",
+    },
+    Binding {
+        mode: Mode::Both,
+        keys: &[(NO, Key::ArrowLeft), (NO, Key::ArrowUp), (NO, Key::PageUp)],
+        action: Action::Prev,
+        what: "Previous image",
+    },
+    Binding {
+        mode: Mode::Both,
+        keys: &[
+            (NO, Key::Num1),
+            (NO, Key::Num2),
+            (NO, Key::Num3),
+            (NO, Key::Num4),
+            (NO, Key::Num5),
+        ],
+        action: Action::Rate,
+        what: "Rate one to five stars",
+    },
+    Binding {
+        mode: Mode::Both,
+        keys: &[(NO, Key::Num0)],
+        action: Action::Rate,
+        what: "Clear the rating",
+    },
+    Binding {
+        mode: Mode::Both,
+        keys: &[
+            (NO, Key::Num6),
+            (NO, Key::Num7),
+            (NO, Key::Num8),
+            (NO, Key::Num9),
+        ],
+        action: Action::SetLabel,
+        what: "Label red, yellow, green, blue (again clears)",
+    },
+    Binding {
+        mode: Mode::Both,
+        keys: &[(NO, Key::L)],
+        action: Action::CycleLabel,
+        what: "Next colour label",
+    },
+    Binding {
+        mode: Mode::Both,
+        keys: &[(CTRL, Key::V)],
+        action: Action::PasteEdit,
+        what: "Paste an edit (opens the editor)",
+    },
     Binding {
         mode: Mode::Both,
         keys: &[(NO, Key::Z)],
@@ -264,6 +294,17 @@ pub fn digit(key: Key) -> u8 {
     }
 }
 
+/// The colour label a key 6–9 means, as in Lightroom.
+pub fn label_key(key: Key) -> ColourLabel {
+    match key {
+        Key::Num6 => ColourLabel::Red,
+        Key::Num7 => ColourLabel::Yellow,
+        Key::Num8 => ColourLabel::Green,
+        Key::Num9 => ColourLabel::Blue,
+        _ => ColourLabel::None,
+    }
+}
+
 /// How the help shows a binding's keys: `Ctrl+Shift+Z  Ctrl+Y`.
 pub fn keys_label(keys: &[(Modifiers, Key)]) -> String {
     keys.iter()
@@ -298,6 +339,10 @@ fn key_name(k: Key) -> &'static str {
         Key::Num3 => "3",
         Key::Num4 => "4",
         Key::Num5 => "5",
+        Key::Num6 => "6",
+        Key::Num7 => "7",
+        Key::Num8 => "8",
+        Key::Num9 => "9",
         Key::Plus => "+",
         Key::Equals => "=",
         Key::Minus => "\u{2212}",

@@ -579,6 +579,8 @@ pub struct PanelInput<'a> {
     pub icons: &'a Icons,
     /// Of what the canvas shows: the edit, or the original while it is held.
     pub histogram: &'a Histogram,
+    /// The next image is loading: every control is disabled until it is in.
+    pub busy: bool,
 }
 
 /// The editor rail, organised around the edit: one toolbar, then presets,
@@ -592,6 +594,7 @@ pub fn draw_panel(ctx: &Context, input: PanelInput<'_>) -> PanelAction {
         dirty,
         icons,
         histogram,
+        busy,
     } = input;
     let mut action = PanelAction::default();
     let t = T::new(ctx);
@@ -602,6 +605,7 @@ pub fn draw_panel(ctx: &Context, input: PanelInput<'_>) -> PanelAction {
         .frame(Frame::none().fill(SURFACE).stroke(Stroke::new(1.0, BORDER)))
         .show(ctx, |ui| {
             ui.set_width(t.rail_w);
+            ui.set_enabled(!busy);
             toolbar(ui, &t, icons, can_undo, can_redo, dirty, &mut action);
             hairline(ui);
             draw_histogram(ui, &t, histogram);

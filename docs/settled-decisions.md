@@ -208,6 +208,24 @@ tallest level between the ends so a clipped spike does not flatten the rest. It 
 each result, and shows the original's while Backslash is held. The rail with it still ends 322 px above the bottom
 of a 1200 px window (`the_rail_with_its_histogram_fits_a_1200_px_window`).
 
+## Working through a set: the culling keys in the editor, copy and paste (2026-11-02)
+**The arrows, 0–5, L and the new 6–9 work in both modes.** 6–9 set red, yellow, green, blue as in Lightroom;
+the key for the label already set clears it; purple stays on L. A ←/→ on a focused slider is the slider's (it
+steps); a click on the photo gives the arrows back.
+**An arrow in the editor stays in the editor**, on the next image. Over an unsaved edit it asks *Save changes?*
+first (`AfterSave::Navigate`): Save writes and moves on, Discard moves on with the file untouched, Cancel stays —
+the same rule as every other way out ("Nothing is replaced or dropped without asking"). **While the next image
+loads, the rail and the edit keys wait** (`editor_busy`): an edit made then would land on the image going away
+and be dropped when the new one arrives. Landing on a file that will not open leaves the editor.
+**Ctrl+C copies the look; Ctrl+V pastes it, as one undo step.** The look is every slider and the preset, **not
+the rotation or flip**: those are one frame's composition, and pasting them across a set turns the frames that
+were already right. What would move this: a set shot in one wrong orientation, where a "with geometry" paste would
+earn its place. **The clipboard is the system's, as text** (`patina-edit/1 exposure=0.5 preset=Moody`), because
+egui-winit turns Ctrl+C and Ctrl+V into Copy and Paste events and sends Paste only when the clipboard holds text:
+an edit kept inside the app would never see the key. Text that is not an edit says so; an empty clipboard sends
+nothing, so Ctrl+V on one stays silent. Ctrl+V in the viewer opens the editor, so a set goes → Ctrl+V Ctrl+S.
+`keyboard_tests` cover each, with the sidecar and the file on disk checked.
+
 ## Paths are used as given — no `canonicalize` (inherited)
 `std::fs::canonicalize` on Windows returns a verbatim `\\?\C:\…` path, which breaks paths handed over by
 archivers. **Build-enforced**: both `canonicalize` functions are banned in `clippy.toml`, and

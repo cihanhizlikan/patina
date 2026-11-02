@@ -63,7 +63,7 @@ impl ColourLabel {
 // ── Image labels ──────────────────────────────────────────────────────────────
 
 /// Star rating + colour label for one image. Persisted in an XMP sidecar.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ImageLabels {
     /// 0 = unrated, 1–5 = star rating. Values outside [0,5] are clamped.
     pub rating: u8,

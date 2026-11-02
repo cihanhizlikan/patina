@@ -93,8 +93,8 @@ pub enum Preset {
 }
 
 impl Preset {
-    /// Every preset; the rail's order is checked against it in ui.rs.
-    #[cfg(test)]
+    /// Every preset; the rail's order is checked against it in ui.rs, and a
+    /// pasted edit names its preset by one of these.
     pub const ALL: &'static [Self] = &[
         Self::None,
         Self::AutoEnhance,
@@ -198,7 +198,95 @@ impl EditParams {
             && self.vibrance.abs() < 1e-4
             && self.sharpen.abs() < 1e-4
     }
+
+    /// The look: these params without their geometry. A rotation or flip
+    /// belongs to one photo's framing; pasting it across a set would turn
+    /// the frames that were already right.
+    pub fn look(&self) -> EditParams {
+        EditParams {
+            rotation: Rotation::R0,
+            flip_h: false,
+            flip_v: false,
+            ..self.clone()
+        }
+    }
+
+    /// The look as clipboard text, one line. Text, because egui-winit makes
+    /// Ctrl+V a paste event only when the system clipboard holds text: an
+    /// edit kept inside the app would never see the key.
+    pub fn to_clipboard(&self) -> String {
+        let mut s = String::from(CLIPBOARD_TAG);
+        for (name, v) in self.sliders() {
+            if v.abs() >= 1e-4 {
+                s.push_str(&format!(" {name}={v}"));
+            }
+        }
+        if self.preset != Preset::None {
+            s.push_str(&format!(" preset={:?}", self.preset));
+        }
+        s
+    }
+
+    /// `onto` with the look in `text` in place of its own; its geometry
+    /// stays. `None` when the text is not a Patina edit.
+    pub fn paste_from_clipboard(text: &str, onto: &EditParams) -> Option<EditParams> {
+        let rest = text.trim().strip_prefix(CLIPBOARD_TAG)?;
+        let mut p = EditParams {
+            rotation: onto.rotation,
+            flip_h: onto.flip_h,
+            flip_v: onto.flip_v,
+            ..EditParams::default()
+        };
+        for pair in rest.split_whitespace() {
+            let (name, v) = pair.split_once('=')?;
+            if name == "preset" {
+                p.preset = *Preset::ALL.iter().find(|q| format!("{q:?}") == v)?;
+                continue;
+            }
+            let v: f32 = v.parse().ok().filter(|v: &f32| v.is_finite())?;
+            let (lo, hi) = if name == "exposure" {
+                (-2.0, 2.0)
+            } else if name == "sharpen" {
+                (0.0, 1.0)
+            } else {
+                (-1.0, 1.0)
+            };
+            *p.slider_mut(name)? = v.clamp(lo, hi);
+        }
+        Some(p)
+    }
+
+    fn sliders(&self) -> [(&'static str, f32); 8] {
+        [
+            ("exposure", self.exposure),
+            ("highlights", self.highlights),
+            ("shadows", self.shadows),
+            ("brightness", self.brightness),
+            ("contrast", self.contrast),
+            ("saturation", self.saturation),
+            ("vibrance", self.vibrance),
+            ("sharpen", self.sharpen),
+        ]
+    }
+
+    fn slider_mut(&mut self, name: &str) -> Option<&mut f32> {
+        Some(match name {
+            "exposure" => &mut self.exposure,
+            "highlights" => &mut self.highlights,
+            "shadows" => &mut self.shadows,
+            "brightness" => &mut self.brightness,
+            "contrast" => &mut self.contrast,
+            "saturation" => &mut self.saturation,
+            "vibrance" => &mut self.vibrance,
+            "sharpen" => &mut self.sharpen,
+            _ => return None,
+        })
+    }
 }
+
+/// How a copied edit starts on the clipboard; the version lets the format
+/// change without misreading an old one.
+const CLIPBOARD_TAG: &str = "patina-edit/1";
 
 // ── Undo stack ────────────────────────────────────────────────────────────────
 
@@ -950,6 +1038,57 @@ mod tests {
             n,
             "the transparent one is not counted"
         );
+    }
+
+    /// A copied look comes back exactly onto another image, whose own
+    /// rotation stays and whose own sliders are replaced.
+    #[test]
+    fn a_copied_look_pastes_back_without_its_geometry() {
+        let src = EditParams {
+            rotation: Rotation::R90,
+            flip_h: true,
+            exposure: 0.35,
+            contrast: -0.2,
+            sharpen: 0.5,
+            preset: Preset::GoldenHour,
+            ..EditParams::default()
+        };
+        let text = src.to_clipboard();
+        assert_eq!(
+            text,
+            "patina-edit/1 exposure=0.35 contrast=-0.2 sharpen=0.5 preset=GoldenHour"
+        );
+        let onto = EditParams {
+            rotation: Rotation::R270,
+            saturation: 0.8,
+            ..EditParams::default()
+        };
+        let p = EditParams::paste_from_clipboard(&text, &onto).unwrap();
+        assert_eq!(p.rotation, Rotation::R270, "the target keeps its framing");
+        assert!(!p.flip_h);
+        assert_eq!((p.exposure, p.contrast, p.sharpen), (0.35, -0.2, 0.5));
+        assert_eq!(p.saturation, 0.0, "the look replaces, it does not add");
+        assert_eq!(p.preset, Preset::GoldenHour);
+    }
+
+    #[test]
+    fn other_clipboard_text_is_not_an_edit() {
+        let p = EditParams::default();
+        for text in [
+            "",
+            "hello",
+            "patina-edit/1 exposure=NaN",
+            "patina-edit/1 tint=0.5",
+            "patina-edit/1 preset=Sepia",
+            "patina-edit/2 exposure=0.1",
+        ] {
+            assert!(
+                EditParams::paste_from_clipboard(text, &p).is_none(),
+                "{text:?}"
+            );
+        }
+        let wild = EditParams::paste_from_clipboard("patina-edit/1 exposure=9", &p).unwrap();
+        assert_eq!(wild.exposure, 2.0, "clamped to the slider's range");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

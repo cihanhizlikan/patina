@@ -114,10 +114,20 @@ struct DrainResult {
 
 // ── Modal dialog variants ─────────────────────────────────────────────────────
 
+/// Where "Save changes?" was going when it asked: Save or Discard goes on
+/// there, Cancel stays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AfterSave {
+    LeaveEditor,
+    Quit,
+    /// To the next image (true) or the previous one, staying in the editor.
+    Navigate(bool),
+}
+
 #[derive(Debug)]
 enum ModalDialog {
     SaveOnExit {
-        save_and_quit: bool,
+        then: AfterSave,
     },
     /// Holds the file it asks about, so Delete trashes that file even if the
     /// view has moved on since the dialog opened.
@@ -381,7 +391,9 @@ struct App {
     pending_error: Option<String>,
     pending_rename: Option<(PathBuf, String)>,
     pending_delete: Option<PathBuf>,
-    pending_save_and_exit: Option<bool>,
+    pending_save_and_exit: Option<AfterSave>,
+    /// Discard was chosen in a "Save changes?" that an arrow opened.
+    pending_navigate: Option<bool>,
     /// Discard was chosen in a "Save changes?" that a quit opened.
     pending_close: bool,
     show_help: bool,
@@ -442,6 +454,7 @@ impl App {
             pending_delete: None,
             pending_close: false,
             pending_save_and_exit: None,
+            pending_navigate: None,
             show_help: false,
             show_info: false,
         }
@@ -536,6 +549,12 @@ impl App {
         self.current_image = Some(img.clone());
         self.current_path = Some(path.clone());
         self.image_gen += 1;
+        // An arrow in the editor: the editor stays, on the new image. The
+        // rail was disabled while it loaded (`editor_busy`), so no edit was
+        // made to the image going away.
+        if self.in_editor() {
+            self.restart_editor();
+        }
 
         if dir_changed || mode == OpenMode::FirstImage {
             self.navigator.set_current(path.clone());
@@ -582,6 +601,10 @@ impl App {
             return; // the user has already moved on to another file
         }
         let dir_changed = self.current_path.as_deref().and_then(|p| p.parent()) != path.parent();
+        // Nothing to edit: an arrow in the editor that lands here leaves it.
+        if self.in_editor() {
+            self.do_exit_editor();
+        }
         self.clear_image();
         self.loading_path = None;
         self.loading_since = None;
@@ -868,12 +891,52 @@ impl App {
         }
         if self.editor_params_changed() {
             self.modal = Some(ModalDialog::SaveOnExit {
-                save_and_quit: quit_intent,
+                then: if quit_intent {
+                    AfterSave::Quit
+                } else {
+                    AfterSave::LeaveEditor
+                },
             });
             return false;
         }
         self.do_exit_editor();
         true
+    }
+
+    /// The arrows in the editor: on to the next image with the editor still
+    /// open, asking first when the edit is unsaved.
+    fn navigate_in_editor(&mut self, forward: bool, ctx: &egui::Context) {
+        if self.modal.is_some() {
+            return;
+        }
+        if self.editor_params_changed() {
+            self.modal = Some(ModalDialog::SaveOnExit {
+                then: AfterSave::Navigate(forward),
+            });
+            return;
+        }
+        self.navigate(forward, ctx);
+    }
+
+    /// In the editor with the next image still loading: the rail and the
+    /// edit keys wait, since what is on screen is about to be replaced.
+    fn editor_busy(&self) -> bool {
+        self.in_editor() && self.loading_path.is_some()
+    }
+
+    /// A fresh editor on the current image: no edits, nothing to undo. The
+    /// image arriving after an arrow in the editor gets one.
+    fn restart_editor(&mut self) {
+        let Some(img) = &self.current_image else {
+            self.do_exit_editor();
+            return;
+        };
+        self.editor_state = Some(EditorState::new(img));
+        self.initial_editor_params = Some(EditParams::default());
+        self.preview = None;
+        self.edit_rx = None;
+        self.last_slider_change = None;
+        self.edit_shown = false;
     }
 
     fn do_exit_editor(&mut self) {
@@ -1291,15 +1354,22 @@ impl App {
 
     /// Carry out what a dialog answered last frame.
     fn apply_pending_actions(&mut self, ctx: &egui::Context) {
-        if let Some(quit_after) = self.pending_save_and_exit.take() {
+        if let Some(then) = self.pending_save_and_exit.take() {
             // A failed save keeps the editor, the edits and the window open;
             // its error dialog is next frame's modal.
             if self.save_inplace() {
-                self.do_exit_editor();
-                if quit_after {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                match then {
+                    AfterSave::LeaveEditor => self.do_exit_editor(),
+                    AfterSave::Quit => {
+                        self.do_exit_editor();
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    AfterSave::Navigate(forward) => self.navigate(forward, ctx),
                 }
             }
+        }
+        if let Some(forward) = self.pending_navigate.take() {
+            self.navigate(forward, ctx);
         }
         if let Some(path) = self.pending_delete.take() {
             self.execute_delete(path, ctx);
@@ -1320,7 +1390,7 @@ impl App {
         if self.modal.is_none() {
             self.save_as_modal = None;
             self.modal = Some(ModalDialog::SaveOnExit {
-                save_and_quit: true,
+                then: AfterSave::Quit,
             });
         }
     }
@@ -1555,8 +1625,12 @@ impl App {
                 dirty: self.editor_params_changed(),
                 icons: self.icon_cache.as_ref().unwrap(),
                 histogram,
+                busy: self.editor_busy(),
             },
         );
+        if self.editor_busy() {
+            return None;
+        }
         self.preview_preset(action.hover_preset, &params);
         if action.has_any() {
             Some(action)
@@ -1626,6 +1700,15 @@ impl App {
 
         if canvas_resp.double_clicked() {
             self.toggle_maximize(ui.ctx());
+        }
+        // A click on the photo hands the arrows back from a focused slider
+        // (which steps on ←/→) to browsing.
+        if canvas_resp.clicked() {
+            ui.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
         }
     }
 
@@ -1805,6 +1888,23 @@ impl App {
                 }
             }
         }
+
+        // Ctrl+C and Ctrl+V, as egui-winit delivers them. With no text on the
+        // system clipboard Ctrl+V sends nothing at all, so it cannot say so.
+        let clip: Vec<egui::Event> = ctx.input_mut(|i| {
+            let (clip, rest) = std::mem::take(&mut i.events)
+                .into_iter()
+                .partition(|e| matches!(e, egui::Event::Copy | egui::Event::Paste(_)));
+            i.events = rest;
+            clip
+        });
+        for ev in clip {
+            match ev {
+                egui::Event::Copy if editor => self.copy_edit(ctx),
+                egui::Event::Paste(text) => self.paste_edit(&text, ctx),
+                _ => {}
+            }
+        }
     }
 
     /// The original is on screen while Backslash is held in the editor. The
@@ -1835,43 +1935,112 @@ impl App {
         }
     }
 
+    fn set_rating(&mut self, rating: u8) {
+        self.write_labels(ImageLabels {
+            rating,
+            ..self.labels
+        });
+    }
+
+    fn set_label(&mut self, colour: ColourLabel) {
+        self.write_labels(ImageLabels {
+            colour,
+            ..self.labels
+        });
+    }
+
+    /// Write the sidecar and say what changed; on failure the file decides
+    /// what is shown, and a dialog says why.
+    fn write_labels(&mut self, new: ImageLabels) {
+        let Some(path) = &self.current_path else {
+            return;
+        };
+        let old = std::mem::replace(&mut self.labels, new);
+        match xmp::write_labels(path, &self.labels) {
+            Ok(()) if old.rating != new.rating => self.toast.show(hud::rating_toast(new.rating)),
+            Ok(()) => self.toast.show(hud::label_toast(new.colour)),
+            Err(e) => {
+                let what = if old.rating != new.rating {
+                    "rating"
+                } else {
+                    "colour label"
+                };
+                self.pending_error = Some(format!("Could not save the {what}:\n{e}"));
+                self.labels = xmp::read_labels(path);
+            }
+        }
+    }
+
+    /// Put the edit's look on the system clipboard (see
+    /// `EditParams::to_clipboard` for why it is text).
+    fn copy_edit(&mut self, ctx: &egui::Context) {
+        let Some(es) = &self.editor_state else {
+            return;
+        };
+        let look = es.undo.current().look();
+        if look.is_identity() {
+            self.toast
+                .show("Nothing to copy \u{2014} no edits besides rotation or flip");
+            return;
+        }
+        ctx.output_mut(|o| o.copied_text = look.to_clipboard());
+        self.toast.show("Edit copied");
+    }
+
+    /// Ctrl+V: the copied look onto this image, one undo step. From the
+    /// viewer it opens the editor first, so a set is worked through with
+    /// → Ctrl+V Ctrl+S.
+    fn paste_edit(&mut self, text: &str, ctx: &egui::Context) {
+        // While an image loads, the one on screen is about to be replaced.
+        if self.loading_path.is_some() || self.current_image.is_none() {
+            return;
+        }
+        let onto = self
+            .editor_state
+            .as_ref()
+            .map(|es| es.undo.current().clone())
+            .unwrap_or_default();
+        let Some(p) = EditParams::paste_from_clipboard(text, &onto) else {
+            self.toast.show("The clipboard holds no Patina edit");
+            return;
+        };
+        self.enter_editor(ctx);
+        self.editor_commit_and_sync(p);
+        self.toast.show("Edit pasted");
+    }
+
     fn run_action(&mut self, action: keymap::Action, key: egui::Key, ctx: &egui::Context) {
         use keymap::Action;
         match action {
-            Action::Next => self.navigate(true, ctx),
-            Action::Prev => self.navigate(false, ctx),
-            Action::Rate => {
-                if let Some(path) = &self.current_path {
-                    self.labels.rating = keymap::digit(key);
-                    match xmp::write_labels(path, &self.labels) {
-                        Ok(()) => self.toast.show(hud::rating_toast(self.labels.rating)),
-                        Err(e) => {
-                            self.pending_error = Some(format!("Could not save the rating:\n{e}"));
-                            self.labels = xmp::read_labels(path);
-                        }
-                    }
+            Action::Next | Action::Prev => {
+                let forward = action == Action::Next;
+                if self.in_editor() {
+                    self.navigate_in_editor(forward, ctx);
+                } else {
+                    self.navigate(forward, ctx);
                 }
             }
-            Action::CycleLabel => {
-                if let Some(path) = &self.current_path {
-                    self.labels.colour = match self.labels.colour {
-                        ColourLabel::None => ColourLabel::Red,
-                        ColourLabel::Red => ColourLabel::Yellow,
-                        ColourLabel::Yellow => ColourLabel::Green,
-                        ColourLabel::Green => ColourLabel::Blue,
-                        ColourLabel::Blue => ColourLabel::Purple,
-                        ColourLabel::Purple => ColourLabel::None,
-                    };
-                    match xmp::write_labels(path, &self.labels) {
-                        Ok(()) => self.toast.show(hud::label_toast(self.labels.colour)),
-                        Err(e) => {
-                            self.pending_error =
-                                Some(format!("Could not save the colour label:\n{e}"));
-                            self.labels = xmp::read_labels(path);
-                        }
-                    }
-                }
+            Action::Rate => self.set_rating(keymap::digit(key)),
+            Action::CycleLabel => self.set_label(match self.labels.colour {
+                ColourLabel::None => ColourLabel::Red,
+                ColourLabel::Red => ColourLabel::Yellow,
+                ColourLabel::Yellow => ColourLabel::Green,
+                ColourLabel::Green => ColourLabel::Blue,
+                ColourLabel::Blue => ColourLabel::Purple,
+                ColourLabel::Purple => ColourLabel::None,
+            }),
+            Action::SetLabel => {
+                let label = keymap::label_key(key);
+                self.set_label(if self.labels.colour == label {
+                    ColourLabel::None
+                } else {
+                    label
+                });
             }
+            Action::CopyEdit => self.copy_edit(ctx),
+            // Reaches here only as a bare key; the text comes in egui's Paste
+            // event, handled in `process_keyboard`.
+            Action::PasteEdit => {}
             Action::EnterEditor => {
                 if self.current_image.is_none() {
                     // No pixels, nothing to edit; say so rather than ignore E.
@@ -1912,6 +2081,8 @@ impl App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
+            // The editor's own keys wait while the next image loads.
+            Action::Undo | Action::Redo | Action::Save | Action::SaveAs if self.editor_busy() => {}
             Action::Undo => self.editor_undo(),
             Action::Redo => self.editor_redo(),
             Action::Save => {
@@ -2617,20 +2788,28 @@ fn apply_modal_action(app: &mut App, action: ModalAction) {
     match action {
         ModalAction::Dismiss => {}
         ModalAction::Save => {
-            if let Some(ModalDialog::SaveOnExit { save_and_quit }) = &app.modal {
-                app.pending_save_and_exit = Some(*save_and_quit);
+            if let Some(ModalDialog::SaveOnExit { then }) = &app.modal {
+                app.pending_save_and_exit = Some(*then);
             }
         }
         ModalAction::Discard => {
             // Discarding on the way out still goes out; before, Q and Discard
             // only left the editor.
-            if let Some(ModalDialog::SaveOnExit {
-                save_and_quit: true,
-            }) = &app.modal
-            {
-                app.pending_close = true;
+            let then = match &app.modal {
+                Some(ModalDialog::SaveOnExit { then }) => *then,
+                _ => AfterSave::LeaveEditor,
+            };
+            match then {
+                AfterSave::Quit => {
+                    app.pending_close = true;
+                    app.do_exit_editor();
+                }
+                AfterSave::LeaveEditor => app.do_exit_editor(),
+                AfterSave::Navigate(forward) => {
+                    app.restart_editor();
+                    app.pending_navigate = Some(forward);
+                }
             }
-            app.do_exit_editor();
         }
         ModalAction::Delete => {
             if let Some(ModalDialog::ConfirmDelete { path }) = &app.modal {
@@ -3241,7 +3420,7 @@ mod keyboard_tests {
             matches!(
                 app.modal,
                 Some(ModalDialog::SaveOnExit {
-                    save_and_quit: true
+                    then: AfterSave::Quit
                 })
             ),
             "{:?}",
@@ -3524,6 +3703,157 @@ mod keyboard_tests {
         assert_ne!(es.histogram, src, "exposure +0.5 moved the levels");
     }
 
+    // ── Working through a set ─────────────────────────────────────────────────
+
+    /// An arrow over an unsaved edit asks first. Cancel keeps the edit and
+    /// the image; Discard moves on with the editor still open, the file on
+    /// disk untouched.
+    #[test]
+    fn an_arrow_in_the_editor_asks_before_dropping_an_edit() {
+        let dir = TempDir::new("edarrow");
+        let a = dir.jpeg("a.jpg");
+        let b = dir.jpeg("b.jpg");
+        let before = std::fs::read(&a).unwrap();
+        let (mut app, ctx) = app_on(&a);
+        edit(&mut app, &ctx);
+
+        frame(
+            &mut app,
+            &ctx,
+            vec![press(Key::ArrowRight, Modifiers::NONE)],
+        );
+        assert!(matches!(
+            app.modal,
+            Some(ModalDialog::SaveOnExit {
+                then: AfterSave::Navigate(true)
+            })
+        ));
+        frame(&mut app, &ctx, vec![press(Key::Escape, Modifiers::NONE)]);
+        assert!(app.modal.is_none());
+        assert_eq!(app.current_path.as_ref(), Some(&a), "Cancel stays");
+        assert!(app.editor_params_changed(), "and keeps the edit");
+
+        frame(
+            &mut app,
+            &ctx,
+            vec![press(Key::ArrowRight, Modifiers::NONE)],
+        );
+        apply_modal_action(&mut app, ModalAction::Discard);
+        app.modal = None;
+        frame(&mut app, &ctx, vec![]);
+        assert!(app.editor_busy(), "b.jpg is loading; the rail waits");
+        frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Paste("patina-edit/1 exposure=1".into())],
+        );
+        pump_until(&mut app, &ctx, |app| app.current_path.as_ref() == Some(&b));
+
+        assert!(app.in_editor(), "still editing, now b.jpg");
+        assert!(
+            !app.editor_params_changed(),
+            "a fresh edit; the paste mid-load was dropped"
+        );
+        assert_eq!(std::fs::read(&a).unwrap(), before, "a.jpg as it was");
+    }
+
+    /// Save from an arrow's question writes the file, then moves on.
+    #[test]
+    fn save_from_an_arrow_writes_then_moves_on() {
+        let dir = TempDir::new("edsave");
+        let a = dir.jpeg("a.jpg");
+        let b = dir.jpeg("b.jpg");
+        let before = std::fs::read(&a).unwrap();
+        let (mut app, ctx) = app_on(&a);
+        edit(&mut app, &ctx);
+
+        frame(&mut app, &ctx, vec![press(Key::ArrowLeft, Modifiers::NONE)]);
+        frame(&mut app, &ctx, vec![press(Key::Enter, Modifiers::NONE)]);
+        frame(&mut app, &ctx, vec![]);
+        pump_until(&mut app, &ctx, |app| app.current_path.as_ref() == Some(&b));
+
+        assert_ne!(std::fs::read(&a).unwrap(), before, "a.jpg was saved");
+        assert!(app.in_editor() && !app.editor_params_changed());
+    }
+
+    /// 0–5, 6–9 and L work in the editor, and the sidecar on disk says so.
+    #[test]
+    fn ratings_and_labels_work_in_the_editor() {
+        let dir = TempDir::new("edlabels");
+        let path = dir.jpeg("photo.jpg");
+        let (mut app, ctx) = app_on(&path);
+        app.enter_editor(&ctx);
+
+        frame(&mut app, &ctx, vec![press(Key::Num4, Modifiers::NONE)]);
+        frame(&mut app, &ctx, vec![press(Key::Num8, Modifiers::NONE)]);
+        let on_disk = xmp::read_labels(&path);
+        assert_eq!((on_disk.rating, on_disk.colour), (4, ColourLabel::Green));
+        assert_eq!(app.toast.current.as_ref().unwrap().0, "Label: Green");
+
+        frame(&mut app, &ctx, vec![press(Key::Num8, Modifiers::NONE)]);
+        assert_eq!(
+            xmp::read_labels(&path).colour,
+            ColourLabel::None,
+            "8 again clears"
+        );
+        frame(&mut app, &ctx, vec![press(Key::Num6, Modifiers::NONE)]);
+        frame(&mut app, &ctx, vec![press(Key::L, Modifiers::NONE)]);
+        assert_eq!(
+            xmp::read_labels(&path).colour,
+            ColourLabel::Yellow,
+            "6 red, L on"
+        );
+        assert!(app.in_editor(), "and the editor is still open");
+    }
+
+    /// Ctrl+C in the editor puts the look on the clipboard; Ctrl+V in the
+    /// viewer of another image opens the editor with it, one undo step.
+    #[test]
+    fn a_copied_edit_pastes_onto_another_image() {
+        let dir = TempDir::new("copypaste");
+        let (mut app, ctx) = app_on(&dir.jpeg("a.jpg"));
+        app.enter_editor(&ctx);
+        let p = EditParams {
+            rotation: editor::Rotation::R90,
+            exposure: 0.5,
+            preset: editor::Preset::Moody,
+            ..EditParams::default()
+        };
+        app.editor_state.as_mut().unwrap().commit(p);
+        let raw = egui::RawInput {
+            events: vec![egui::Event::Copy],
+            ..Default::default()
+        };
+        let out = ctx.run(raw, |ctx| app.process_keyboard(ctx));
+        let text = out.platform_output.copied_text;
+        assert_eq!(text, "patina-edit/1 exposure=0.5 preset=Moody");
+
+        let (mut other, ctx2) = app_on(&dir.jpeg("b.jpg"));
+        frame(&mut other, &ctx2, vec![egui::Event::Paste(text)]);
+        assert!(other.in_editor(), "the viewer's Ctrl+V opened the editor");
+        let es = other.editor_state.as_ref().unwrap();
+        let got = es.undo.current();
+        assert_eq!(got.exposure, 0.5);
+        assert_eq!(got.preset, editor::Preset::Moody);
+        assert_eq!(got.rotation, editor::Rotation::R0, "not the rotation");
+        assert_eq!(other.toast.current.as_ref().unwrap().0, "Edit pasted");
+        other.editor_undo();
+        assert!(
+            !other.editor_params_changed(),
+            "one undo takes the paste back"
+        );
+
+        frame(
+            &mut other,
+            &ctx2,
+            vec![egui::Event::Paste("a shopping list".into())],
+        );
+        assert_eq!(
+            other.toast.current.as_ref().unwrap().0,
+            "The clipboard holds no Patina edit"
+        );
+    }
+
     // ── Closing the window ────────────────────────────────────────────────────
 
     #[test]
@@ -3544,7 +3874,7 @@ mod keyboard_tests {
             matches!(
                 app.modal,
                 Some(ModalDialog::SaveOnExit {
-                    save_and_quit: true
+                    then: AfterSave::Quit
                 })
             ),
             "{:?}",
