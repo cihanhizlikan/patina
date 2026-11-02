@@ -50,7 +50,8 @@ tiles. The viewer keeps its zero-chrome canvas. The editor rail is reorganised a
 
 ## Open decisions, after the UI
 
-9. **Preload cache** — said to grow without bound; measure the working set before changing it.
+9. ~~**Preload cache.**~~ Done — measured one more decoded image per step, now the two neighbours only; a Save
+   As over a neighbour no longer serves its old pixels; see settled-decisions.md.
 10. **Sidecar name** — read both `photo.xmp` and `photo.jpg.xmp`, write to whichever exists.
 11. **Orientation everywhere** — the first window's size, and RAW files.
 12. **Icon in the executable** — `build.rs` with `winres`, which is already a build-dependency.

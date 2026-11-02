@@ -226,6 +226,20 @@ an edit kept inside the app would never see the key. Text that is not an edit sa
 nothing, so Ctrl+V on one stays silent. Ctrl+V in the viewer opens the editor, so a set goes → Ctrl+V Ctrl+S.
 `keyboard_tests` cover each, with the sidecar and the file on disk checked.
 
+## The preload cache holds the two neighbours, nothing else (2026-11-02)
+Measured before the change: walking 12 files forward left `[1, 3, 4, 5, 5, 6, 8, 9, 10, 11, 10]` decoded images
+in the cache, one more per step. Opening an image took it out of the cache, and the image left behind was
+decoded again as the new previous neighbour; nothing was ever evicted. At 24 MP that is 96 MB per photo browsed.
+Now `preload_neighbours` trims the cache to `peek_next`/`peek_prev` before it decodes what is missing, and a
+decode that lands after the user has moved on is dropped: 2 entries at every step
+(`the_preload_cache_holds_the_neighbours_only`). Save As over a neighbour evicts that file, which was served
+stale before (`save_as_over_a_neighbour_is_not_served_stale_from_the_cache`, which fails without it).
+**The image left behind is decoded again, not moved into the cache**: after a save, the pixels in memory are the
+edit before encoding, not what the file decodes to, and the cache must hold what the file holds. **A neighbour
+changed by another program stays stale** until it stops being a neighbour: the directory watcher also fires for
+Patina's own sidecar writes, so flushing on it would throw the cache away on every rating. What would move this:
+a watcher event that names the file, so only that entry goes.
+
 ## Paths are used as given — no `canonicalize` (inherited)
 `std::fs::canonicalize` on Windows returns a verbatim `\\?\C:\…` path, which breaks paths handed over by
 archivers. **Build-enforced**: both `canonicalize` functions are banned in `clippy.toml`, and

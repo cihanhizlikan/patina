@@ -546,7 +546,7 @@ impl App {
 
         let dir_changed = self.current_path.as_deref().and_then(|p| p.parent()) != path.parent();
 
-        self.current_image = Some(img.clone());
+        self.current_image = Some(img);
         self.current_path = Some(path.clone());
         self.image_gen += 1;
         // An arrow in the editor: the editor stays, on the new image. The
@@ -561,8 +561,7 @@ impl App {
             self.watch_directory(path.parent().map(|p| p.to_path_buf()), ctx);
         }
 
-        self.preload_neighbour(true, ctx);
-        self.preload_neighbour(false, ctx);
+        self.preload_neighbours(ctx);
 
         // Load XMP labels synchronously — tiny file, negligible I/O.
         self.labels = self
@@ -615,36 +614,39 @@ impl App {
             self.navigator.set_current(path.clone());
             self.watch_directory(path.parent().map(|p| p.to_path_buf()), ctx);
         }
-        self.preload_neighbour(true, ctx);
-        self.preload_neighbour(false, ctx);
+        self.preload_neighbours(ctx);
     }
 
-    fn preload_neighbour(&mut self, forward: bool, ctx: &egui::Context) {
-        // Peek: next() and prev() move the navigator's position.
-        let target = if forward {
-            self.navigator.peek_next()
-        } else {
-            self.navigator.peek_prev()
-        };
-        let Some(p) = target else { return };
-        if self.preload_cache.contains_key(&p) {
-            return;
-        }
-        if self.loading_path.as_deref() == Some(&p) {
-            return;
-        }
+    /// The files an arrow key would open next. Peek: next() and prev() move
+    /// the navigator's position.
+    fn neighbours(&self) -> [Option<PathBuf>; 2] {
+        [self.navigator.peek_next(), self.navigator.peek_prev()]
+    }
 
-        let tx = self.msg_tx.clone();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            if let LoadOutcome::Ok(img) = load_image(&p) {
-                let _ = tx.send(Msg::Preloaded {
-                    path: p,
-                    image: img,
-                });
-                ctx.request_repaint();
+    /// Keep the cache to the two neighbours and decode whichever is missing.
+    /// The cache holds only what an arrow can reach: before, the image left
+    /// behind was never evicted, and walking a folder kept every image seen
+    /// decoded — 96 MB each at 24 MP.
+    fn preload_neighbours(&mut self, ctx: &egui::Context) {
+        let neighbours = self.neighbours();
+        self.preload_cache
+            .retain(|p, _| neighbours.iter().flatten().any(|n| n == p));
+        for p in neighbours.into_iter().flatten() {
+            if self.preload_cache.contains_key(&p) || self.loading_path.as_ref() == Some(&p) {
+                continue;
             }
-        });
+            let tx = self.msg_tx.clone();
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                if let LoadOutcome::Ok(img) = load_image(&p) {
+                    let _ = tx.send(Msg::Preloaded {
+                        path: p,
+                        image: img,
+                    });
+                    ctx.request_repaint();
+                }
+            });
+        }
     }
 
     fn watch_directory(&mut self, dir: Option<PathBuf>, ctx: &egui::Context) {
@@ -733,8 +735,11 @@ impl App {
                     log!("[load] unsupported: {}: {}", path.display(), reason);
                     self.show_bad_file(path, reason, mode, ctx);
                 }
+                // A decode that lands after the user has moved on is dropped.
                 Msg::Preloaded { path, image } => {
-                    self.preload_cache.insert(path, image);
+                    if self.neighbours().contains(&Some(path.clone())) {
+                        self.preload_cache.insert(path, image);
+                    }
                 }
                 Msg::Deleted { path, result } => {
                     self.deleting = false;
@@ -1245,6 +1250,9 @@ impl App {
             self.toast
                 .show(format!("Saved as {}", name.to_string_lossy()));
         }
+        // A Save As over a neighbour leaves its old decode in the cache, and
+        // an arrow back to it would show what the file no longer holds.
+        self.preload_cache.remove(&dest);
         self.current_path = Some(dest.clone());
         self.current_image = Some(display);
         self.navigator.set_current(dest);
@@ -4124,6 +4132,72 @@ mod keyboard_tests {
                 _ => None,
             })
             .collect()
+    }
+
+    // ── Item 9: the preload cache ──────────────────────────────────────────────
+
+    /// The cache holds at most the two neighbours, however far you walk.
+    #[test]
+    fn the_preload_cache_holds_the_neighbours_only() {
+        let dir = TempDir::new("preload");
+        let paths: Vec<PathBuf> = (0..12).map(|i| dir.jpeg(&format!("{i:02}.jpg"))).collect();
+        let (mut app, ctx) = app_on(&paths[0]);
+        let mut sizes = Vec::new();
+        for (i, path) in paths.iter().enumerate().skip(1) {
+            frame(
+                &mut app,
+                &ctx,
+                vec![press(Key::ArrowRight, Modifiers::NONE)],
+            );
+            pump_until(&mut app, &ctx, |app| {
+                app.current_path.as_ref() == Some(path)
+            });
+            // Wait for the decode of the next neighbour, where there is one.
+            let next = paths.get(i + 1).cloned();
+            pump_until(&mut app, &ctx, |app| {
+                next.as_ref()
+                    .is_none_or(|n| app.preload_cache.contains_key(n))
+            });
+            sizes.push(app.preload_cache.len());
+        }
+        eprintln!("cache entries after each step: {sizes:?}");
+        assert!(sizes.iter().all(|&n| n <= 2), "{sizes:?}");
+    }
+
+    /// Save As over a neighbour, browse away and back: what shows is what the
+    /// file now holds, not the decode cached before the save.
+    #[test]
+    fn save_as_over_a_neighbour_is_not_served_stale_from_the_cache() {
+        let dir = TempDir::new("preload-save-as");
+        let a = dir.jpeg("a.jpg");
+        let b = dir.jpeg("b.jpg");
+        let c = dir.jpeg("c.jpg");
+        let (mut app, ctx) = app_on(&b);
+        app.preload_neighbours(&ctx);
+        pump_until(&mut app, &ctx, |app| app.preload_cache.contains_key(&c));
+        let before = app.preload_cache[&c].frames[0].pixels.clone();
+
+        edit(&mut app, &ctx);
+        app.commit_save_as(c.clone(), 95, None);
+        let on_disk = |p: &Path| match load_image(p) {
+            LoadOutcome::Ok(img) => img.frames[0].pixels.clone(),
+            _ => panic!("{} did not load", p.display()),
+        };
+        assert_ne!(on_disk(&c), before, "the save changed c on disk");
+        app.do_exit_editor();
+
+        // c → a (wrapping), then back to c.
+        for (key, path) in [(Key::ArrowRight, &a), (Key::ArrowLeft, &c)] {
+            frame(&mut app, &ctx, vec![press(key, Modifiers::NONE)]);
+            pump_until(&mut app, &ctx, |app| {
+                app.current_path.as_ref() == Some(path)
+            });
+        }
+        assert_eq!(
+            app.current_image.as_ref().unwrap().frames[0].pixels,
+            on_disk(&c),
+            "c shows what it holds on disk"
+        );
     }
 
     /// A file that will not decode shows as a card, not a modal, and the
