@@ -78,19 +78,29 @@ impl ImageLabels {
 
 // ── Sidecar path ──────────────────────────────────────────────────────────────
 
-/// Returns the path of the XMP sidecar for `image_path`.
-/// e.g. `/photos/DSC001.jpg` → `/photos/DSC001.jpg.xmp`
-/// We use the `.jpg.xmp` convention (full filename + .xmp) rather than
-/// stripping the extension, to avoid collisions between `foo.jpg` and `foo.png`.
-/// Returns the XMP sidecar path for an image.
-///
-/// Uses the full-filename convention: `photo.jpg` → `photo.jpg.xmp`.
-/// This avoids collisions between `photo.jpg` and `photo.png` sharing `photo.xmp`.
+/// The XMP sidecar for `image_path`, of the two names in use:
+/// `photo.jpg.xmp` (darktable, and what Patina creates) and `photo.xmp`
+/// (Lightroom, Capture One). The full-filename one wins when both exist;
+/// `photo.xmp` is used when only it exists; with neither, the result is the
+/// full-filename path, which is created on the first write.
 pub fn sidecar_path(image_path: &Path) -> PathBuf {
-    // Append ".xmp" to the full filename rather than replacing the extension.
-    let filename = image_path.file_name().unwrap_or_default();
-    let xmp_name = format!("{}.xmp", filename.to_string_lossy());
-    image_path.with_file_name(xmp_name)
+    let full = full_name_sidecar(image_path);
+    if full.exists() {
+        return full;
+    }
+    let stem = image_path.with_extension("xmp");
+    if stem != full && stem.is_file() {
+        return stem;
+    }
+    full
+}
+
+/// `photo.jpg` → `photo.jpg.xmp`: unlike `photo.xmp`, it cannot be shared
+/// by `photo.jpg` and `photo.png`.
+fn full_name_sidecar(image_path: &Path) -> PathBuf {
+    let mut name = image_path.file_name().unwrap_or_default().to_os_string();
+    name.push(".xmp");
+    image_path.with_file_name(name)
 }
 
 // ── Read ──────────────────────────────────────────────────────────────────────
@@ -174,11 +184,13 @@ fn is_own_packet(text: &str) -> bool {
 /// A sidecar written by another tool (Lightroom, darktable, Capture One)
 /// holds develop settings, keywords and history, so it is edited in place:
 /// only `xmp:Rating` and `xmp:Label` change, every other byte is kept, and
-/// it is never deleted. Only a sidecar exactly as Patina writes it is
-/// removed when the labels are cleared. The write is atomic, so a crash
+/// it is never deleted. Only a sidecar exactly as Patina writes it, under the
+/// name Patina gives it, is removed when the labels are cleared: a `photo.xmp`
+/// may be shared with a RAW of the same name. The write is atomic, so a crash
 /// cannot leave a truncated sidecar.
 pub fn write_labels(image_path: &Path, labels: &ImageLabels) -> std::io::Result<()> {
     let xmp_path = sidecar_path(image_path);
+    let ours = xmp_path == full_name_sidecar(image_path);
     let existing = match std::fs::read_to_string(&xmp_path) {
         Ok(text) => Some(text),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -191,7 +203,9 @@ pub fn write_labels(image_path: &Path, labels: &ImageLabels) -> std::io::Result<
             &xmp_path,
             build_xmp_packet(labels.rating, labels.colour.xmp_name()),
         ),
-        Some(text) if labels.is_empty() && is_own_packet(&text) => std::fs::remove_file(&xmp_path),
+        Some(text) if ours && labels.is_empty() && is_own_packet(&text) => {
+            std::fs::remove_file(&xmp_path)
+        }
         Some(text) => write_atomic(&xmp_path, &set_labels(&text, labels)?),
     }
 }
@@ -499,6 +513,117 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&xmp).unwrap(),
             text.replace(">1<", ">4<")
+        );
+    }
+
+    /// A sidecar as Lightroom writes it for `photo.CR2`: named `photo.xmp`,
+    /// with develop settings Patina must keep.
+    const LIGHTROOM: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Adobe XMP Core 7.0-c000">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+    xmp:Rating="3"
+    crs:Exposure2012="+0.35"
+    crs:WhiteBalance="As Shot"/>
+ </rdf:RDF>
+</x:xmpmeta>
+"#;
+
+    #[test]
+    fn a_lightroom_sidecar_is_read() {
+        let dir = TempDir::new("lr-read");
+        let image = dir.0.join("photo.CR2");
+        std::fs::write(dir.0.join("photo.xmp"), LIGHTROOM).unwrap();
+
+        assert_eq!(read_labels(&image).rating, 3);
+    }
+
+    #[test]
+    fn a_lightroom_sidecar_is_written_in_place_and_no_second_one_appears() {
+        let dir = TempDir::new("lr-write");
+        let image = dir.0.join("photo.CR2");
+        let xmp = dir.0.join("photo.xmp");
+        std::fs::write(&xmp, LIGHTROOM).unwrap();
+
+        let labels = ImageLabels {
+            rating: 5,
+            colour: ColourLabel::Red,
+        };
+        write_labels(&image, &labels).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&xmp).unwrap(),
+            LIGHTROOM
+                .replace(r#"xmp:Rating="3""#, r#"xmp:Rating="5""#)
+                .replace(
+                    "<rdf:Description rdf:about",
+                    r#"<rdf:Description xmp:Label="Red" rdf:about"#
+                )
+        );
+        assert!(!dir.0.join("photo.CR2.xmp").exists());
+        assert_eq!(read_labels(&image), labels);
+    }
+
+    #[test]
+    fn with_both_names_the_full_filename_one_is_used() {
+        let dir = TempDir::new("both");
+        let image = dir.0.join("photo.CR2");
+        std::fs::write(dir.0.join("photo.xmp"), LIGHTROOM).unwrap();
+        std::fs::write(dir.0.join("photo.CR2.xmp"), DARKTABLE).unwrap();
+
+        assert_eq!(read_labels(&image).rating, 2);
+        write_labels(
+            &image,
+            &ImageLabels {
+                rating: 4,
+                colour: ColourLabel::None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join("photo.CR2.xmp")).unwrap(),
+            DARKTABLE.replace(r#"xmp:Rating="2""#, r#"xmp:Rating="4""#)
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join("photo.xmp")).unwrap(),
+            LIGHTROOM
+        );
+    }
+
+    #[test]
+    fn with_neither_name_the_full_filename_one_is_created() {
+        let dir = TempDir::new("neither");
+        let image = dir.0.join("photo.CR2");
+
+        write_labels(
+            &image,
+            &ImageLabels {
+                rating: 1,
+                colour: ColourLabel::None,
+            },
+        )
+        .unwrap();
+
+        assert!(dir.0.join("photo.CR2.xmp").is_file());
+        assert!(!dir.0.join("photo.xmp").exists());
+    }
+
+    /// A packet exactly as Patina writes it, but under `photo.xmp`, may belong
+    /// to a RAW beside the JPEG: clearing keeps the file.
+    #[test]
+    fn clearing_labels_never_removes_a_stem_named_sidecar() {
+        let dir = TempDir::new("clearstem");
+        let image = dir.0.join("photo.jpg");
+        let xmp = dir.0.join("photo.xmp");
+        std::fs::write(&xmp, build_xmp_packet(3, "Red")).unwrap();
+
+        write_labels(&image, &ImageLabels::default()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&xmp).unwrap(),
+            build_xmp_packet(0, "")
         );
     }
 

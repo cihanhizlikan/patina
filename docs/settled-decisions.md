@@ -89,8 +89,20 @@ dialog instead of being dropped. The rename's check-then-rename leaves a gap of 
 no-replace is a hard link, which exFAT memory cards lack.
 
 ## Ratings and colour labels live in XMP sidecars
-Not written into the image file: `<image>.xmp` next to it, holding `xmp:Rating` (0–5) and `xmp:Label`
+Not written into the image file: a sidecar next to it, holding `xmp:Rating` (0–5) and `xmp:Label`
 (`src/xmp.rs`).
+
+## Both sidecar names are read and written; `photo.jpg.xmp` is the one created (2026-11-03)
+darktable names a sidecar `photo.jpg.xmp`, Lightroom and Capture One `photo.xmp`; Patina used only the first, so
+a rating set in Lightroom on a RAW was invisible to it, and Patina's to Lightroom. `sidecar_path` now takes
+`photo.jpg.xmp` if it exists, else `photo.xmp` if that exists, else `photo.jpg.xmp`, which is created on the first
+write. The full-filename name wins when both exist because only it cannot belong to another file. **A RAW+JPEG
+pair with a Lightroom `photo.xmp` and no `photo.jpg.xmp` shares one rating**: rating either one edits the RAW's
+sidecar in place, as Lightroom treats the pair as one shot. **A `photo.xmp` is never deleted**, even when it is
+exactly Patina's packet and the labels are cleared, since it may be the RAW's. Tests in `src/xmp.rs` check the
+bytes on disk for each case. What would move this: a folder where `photo.jpg` and `photo.png` are different
+pictures and a tool wrote `photo.xmp` for one of them; telling them apart needs the sidecar to name its file,
+which Lightroom's does not.
 
 ## A sidecar Patina did not write is edited, never replaced (2026-11-01)
 A sidecar from darktable (same `photo.jpg.xmp` name) or another tool holds edit history, develop settings and
@@ -276,11 +288,6 @@ event loop (`src/loader.rs`).
 # Open decisions
 
 Found while writing the baseline (2026-11-01). Each is a candidate until measured; none is settled.
-
-## Sidecar name: `photo.jpg.xmp` or `photo.xmp`
-Patina uses the full-filename form, as darktable does. Lightroom and Capture One use `photo.xmp`, so ratings
-Patina sets on a RAW are invisible to them, and theirs to Patina. Recommendation: read both, write to whichever
-exists, and create `photo.jpg.xmp` only when neither does.
 
 ## What a re-encoded save still loses
 Left over from carrying EXIF and ICC across (above), each measured or read in `image` 0.25.10:
