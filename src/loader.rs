@@ -385,9 +385,57 @@ fn decode_raw(path: &Path) -> Result<DecodedImage, BoxError> {
         .map_err(|e| format!("RAW: decode failed: {e:?}"))?;
 
     let img = img_opt.ok_or("RAW: decoder returned no image")?;
+
+    // The full image is the camera's embedded preview, stored the way the
+    // sensor lay; the RAW's own Orientation tag says how to turn it, as for a
+    // JPEG. Unreadable metadata shows it as stored rather than failing.
+    let orientation = decoder
+        .raw_metadata(&mut raw_file, rawler::decoders::RawDecodeParams::default())
+        .ok()
+        .and_then(|m| m.exif.orientation)
+        .and_then(|o| u8::try_from(o).ok())
+        .and_then(image::metadata::Orientation::from_exif)
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+
+    // rawler builds on `image` 0.24, so its buffer crosses as raw bytes.
+    let rgba = img.into_rgba8();
+    let (w, h) = rgba.dimensions();
+    oriented(rgba.into_raw(), w, h, orientation)
+}
+
+/// RGBA8 pixels turned by an EXIF orientation.
+fn oriented(
+    pixels: Vec<u8>,
+    w: u32,
+    h: u32,
+    orientation: image::metadata::Orientation,
+) -> Result<DecodedImage, BoxError> {
+    let buf = image::RgbaImage::from_raw(w, h, pixels).ok_or("RAW: buffer size mismatch")?;
+    let mut img = image::DynamicImage::ImageRgba8(buf);
+    img.apply_orientation(orientation);
     let rgba = img.into_rgba8();
     let (w, h) = rgba.dimensions();
     Ok(DecodedImage::single(rgba.into_raw(), w, h))
+}
+
+/// The size an image is shown at, read from its header without decoding the
+/// pixels: a JPEG stored landscape with Orientation 6 is portrait. Sizes the
+/// first window. `None` for what `image` cannot read the header of (RAW,
+/// JPEG XL), which then opens at the default size.
+pub fn shown_dimensions(path: &Path) -> Option<(u32, u32)> {
+    use image::metadata::Orientation::*;
+    use image::ImageDecoder;
+    let mut decoder = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_decoder()
+        .ok()?;
+    let (w, h) = decoder.dimensions();
+    match decoder.orientation().unwrap_or(NoTransforms) {
+        Rotate90 | Rotate270 | Rotate90FlipH | Rotate270FlipH => Some((h, w)),
+        _ => Some((w, h)),
+    }
 }
 
 // ── JXL helpers ───────────────────────────────────────────────────────────────
@@ -413,4 +461,63 @@ fn jxl_samples_to_rgba8(samples: &[f32], pixel_count: usize, channels: usize) ->
         d[3] = f32_to_u8(a);
     }
     rgba
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::metadata::Orientation;
+
+    const RED: [u8; 4] = [255, 0, 0, 255];
+    const BLUE: [u8; 4] = [0, 0, 255, 255];
+
+    /// A RAW's preview turned by its Orientation tag: 2×1 red|blue,
+    /// Orientation 6, is shown 1×2 with red on top.
+    #[test]
+    fn a_raw_preview_is_turned_by_its_orientation() {
+        let pixels = [RED, BLUE].concat();
+        let img = oriented(pixels, 2, 1, Orientation::Rotate90).unwrap();
+        assert_eq!((img.width, img.height), (1, 2));
+        assert_eq!(img.frames[0].pixels, [RED, BLUE].concat());
+
+        let img = oriented([RED, BLUE].concat(), 2, 1, Orientation::Rotate270).unwrap();
+        assert_eq!((img.width, img.height), (1, 2));
+        assert_eq!(img.frames[0].pixels, [BLUE, RED].concat());
+    }
+
+    /// A 16×8 JPEG with the given EXIF Orientation, or none.
+    fn jpeg(path: &Path, orientation: Option<u16>) {
+        use image::codecs::jpeg::JpegEncoder;
+        use image::ImageEncoder;
+        let mut enc_out = Vec::new();
+        let mut enc = JpegEncoder::new_with_quality(&mut enc_out, 90);
+        if let Some(o) = orientation {
+            let mut t = vec![b'I', b'I', 42, 0, 8, 0, 0, 0, 1, 0];
+            t.extend_from_slice(&[0x12, 0x01, 3, 0, 1, 0, 0, 0]);
+            t.extend_from_slice(&o.to_le_bytes());
+            t.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+            enc.set_exif_metadata(t).unwrap();
+        }
+        enc.write_image(&[128; 16 * 8 * 3], 16, 8, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        std::fs::write(path, enc_out).unwrap();
+    }
+
+    #[test]
+    fn the_first_window_is_sized_as_the_photo_is_shown() {
+        let dir = std::env::temp_dir().join(format!("patina-shown-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cases = [(None, (16, 8)), (Some(1), (16, 8)), (Some(3), (16, 8))];
+        let turned = [(Some(6), (8, 16)), (Some(8), (8, 16)), (Some(5), (8, 16))];
+        for (i, (orientation, want)) in cases.into_iter().chain(turned).enumerate() {
+            let path = dir.join(format!("{i}.jpg"));
+            jpeg(&path, orientation);
+            assert_eq!(shown_dimensions(&path), Some(want), "{orientation:?}");
+            let LoadOutcome::Ok(img) = load_image(&path) else {
+                panic!("{orientation:?} did not load")
+            };
+            assert_eq!((img.width, img.height), want, "decoded as shown too");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

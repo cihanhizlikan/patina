@@ -55,7 +55,8 @@ tiles. The viewer keeps its zero-chrome canvas. The editor rail is reorganised a
    arrow held the window ~0.5 s at 24 MP; the Fit reduction now happens where the image is decoded (9–17 ms).
 10. ~~**Sidecar name.**~~ Done — `photo.jpg.xmp` and `photo.xmp` are both read and written, `photo.jpg.xmp` is
     created when neither exists; see settled-decisions.md.
-11. **Orientation everywhere** — the first window's size, and RAW files.
+11. ~~**Orientation everywhere.**~~ Done — RAW previews are turned by the RAW's Orientation tag, and the first
+    window is sized as the photo is shown; see settled-decisions.md. Still owed: a check against a real RAW file.
 12. **Icon in the executable** — `build.rs` with `winres`, which is already a build-dependency.
 13. **Sort order like Explorer** — needs a safe crate or a reasoned `unsafe` exception.
 14. **WebP quality** — the encoder is lossless only; lossy needs a crate or the option goes.

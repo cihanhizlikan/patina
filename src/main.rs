@@ -3098,15 +3098,6 @@ fn decode(path: PathBuf, canvas: Option<egui::Vec2>, mode: OpenMode) -> Msg {
     }
 }
 
-fn image_size_hint(path: &Path) -> Option<(u32, u32)> {
-    image::ImageReader::open(path)
-        .ok()?
-        .with_guessed_format()
-        .ok()?
-        .into_dimensions()
-        .ok()
-}
-
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
@@ -3115,7 +3106,7 @@ fn main() {
     let initial_path: Option<PathBuf> = std::env::args().nth(1).map(PathBuf::from);
     let (init_w, init_h) = initial_path
         .as_deref()
-        .and_then(image_size_hint)
+        .and_then(loader::shown_dimensions)
         .unwrap_or(DEFAULT_WINDOW);
 
     let (msg_tx, msg_rx) = bounded::<Msg>(32);

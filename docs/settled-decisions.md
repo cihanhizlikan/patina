@@ -29,6 +29,13 @@ on every frame.
 ## Images are shown by their EXIF orientation (2026-11-01)
 `decode_raster` applies the Orientation tag, as cameras, browsers, Explorer and Lightroom do. Before, a portrait
 phone photo (stored landscape with Orientation 6) opened sideways.
+**Since 2026-11-03 also RAW files and the first window.** `decode_raw` shows rawler's full image, which is the
+camera's embedded preview stored as the sensor lay, so it now applies the RAW's own Orientation tag
+(`raw_metadata`), and shows the preview as stored when that cannot be read. The first window is sized by
+`loader::shown_dimensions`, which reads the tag from the header, so a portrait photo no longer opens in a
+landscape window. **Not checked against a real RAW file**: none was at hand, so `oriented` is tested on known
+pixels, and that the preview is unturned is read from rawler's decoders (CR2, NEF: the IFD0 strip, as stored).
+RAW and JPEG XL still open the first window at the default size, as `image` cannot read their headers.
 
 ## A JPEG rotation is saved as its EXIF orientation, not re-encoded (2026-11-01)
 A save whose only edits are rotate and flip changes the Orientation tag and nothing else (`src/orientation.rs`).
@@ -314,10 +321,6 @@ sharing. Recommendation: the Web preset removes GPS (one IFD pointer in IFD0), t
 ## WebP "quality" is ignored
 The `image` crate's WebP encoder is lossless only, so the *Archive (WebP 90%)* preset writes lossless WebP and the
 quality field does nothing (the code says so; the UI does not).
-
-## Window size and RAW files ignore orientation
-`image_size_hint` sizes the first window from the stored dimensions, so a portrait phone photo opens in a
-landscape window. RAW files go through `rawler`, whose orientation Patina does not apply.
 
 ## The icon is not embedded in the executable
 `winres` is a build-dependency and the module doc mentions `build.rs`, but there is no `build.rs`. Explorer and the
