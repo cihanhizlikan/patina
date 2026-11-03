@@ -63,7 +63,9 @@ tiles. The viewer keeps its zero-chrome canvas. The editor rail is reorganised a
     `unsafe`, chosen over ICU4X after measuring both; see settled-decisions.md.
 14. ~~**WebP quality.**~~ Done — the option went: WebP is written lossless and the dialog says so; lossy
     (libwebp, +416 KB of C) measured and not taken; see settled-decisions.md.
-15. **Metadata a save still loses** — embedded XMP, RAW/JPEG XL sources, a TIFF's ICC; GPS in the Web preset.
+15. ~~**Metadata a save still loses.**~~ Done — RAW and JPEG XL sources' EXIF, a TIFF's profile, the true pixel
+    size, embedded XMP into JPEG and PNG, and the location left out of a web export (EXIF and XMP); WebP/TIFF
+    XMP outputs stay open; see settled-decisions.md.
 
 ## Considered and dropped
 

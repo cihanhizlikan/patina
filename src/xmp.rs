@@ -174,7 +174,7 @@ fn parse_xmp(text: &str) -> ImageLabels {
 }
 
 /// Byte range of a tag's value, in attribute or element syntax.
-fn value_span(text: &str, tag: &str) -> Option<Range<usize>> {
+pub(crate) fn value_span(text: &str, tag: &str) -> Option<Range<usize>> {
     attr_span(text, tag).or_else(|| element_span(text, tag))
 }
 

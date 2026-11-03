@@ -320,6 +320,22 @@ to sRGB. **A TIFF source's profile**, tag 34675, read with kamadak-exif; `image`
 1936×1288. Tests: `a_raw_source_s_exif_is_carried_into_a_jpeg`, `a_jpeg_xl_source_s_exif_is_carried`,
 `a_tiff_source_s_profile_is_carried`. The `experimental` writer is the risk taken: kamadak-exif may change it.
 
+## Embedded XMP is carried into a JPEG or PNG (2026-11-03)
+Keywords, captions, ratings and Lightroom's settings inside the file were lost on every re-encoded save: `image`
+0.25.10 reads XMP (JPEG, PNG, TIFF, GIF) but writes none. `save.rs` now puts it in after encoding, by hand and in
+safe Rust: into a JPEG as an APP1 segment (`http://ns.adobe.com/xap/1.0/`) after the leading APPn segments, into
+a PNG as an uncompressed `iTXt` chunk keyed `XML:com.adobe.xmp` before the first IDAT, with its CRC-32. **No new
+dependency**: the two writers are some sixty lines, and no maintained crate writes XMP into an encoded file without
+re-encoding it. `tiff:Orientation` is set to 1, as the saved pixels are upright (the EXIF's twin); a packet that is
+not UTF-8 is dropped rather than carried with a stale orientation. A packet over one JPEG segment (~64 KB) would
+need Extended XMP and is left out, with a log line. **Remove location** takes `exif:GPS*` and the place names
+(`photoshop:City`/`State`/`Country`, `Iptc4xmpCore:Location`/`CountryCode`, `Iptc4xmpExt:LocationShown`/
+`LocationCreated`) out, as attributes or elements; one in a shape it does not take apart drops the XMP whole.
+Tests read the saved files back through `image`'s own decoders (zune-jpeg; the png crate, which checks the CRC):
+`embedded_xmp_is_carried_into_jpeg_and_png`, `remove_location_takes_the_place_out_of_the_xmp`,
+`xmp_with_an_unremovable_location_is_dropped`. A WebP or TIFF output does not carry it (below). A RAW or JPEG XL
+source's XMP is not read.
+
 ## A web export leaves the location behind (2026-11-03)
 Every save carried the EXIF GPS, the Web preset included; Lightroom and most export tools offer to strip it for
 sharing. Save As now has a **Location: Remove** checkbox, which the Web preset ticks (*Web (JPEG 85%, ≤2048px, no
@@ -330,8 +346,7 @@ leave the coordinates in the file for anything that scans bytes. Offsets elsewhe
 the EXIF is untouched. A GPS block it cannot parse makes the save drop the EXIF whole rather than carry the location.
 `remove_location_takes_the_gps_out_of_the_file` saves a file with a GPS latitude both ways and checks the saved
 bytes: with the option no GPS field and no trace of the latitude's bytes, Make still there; without it, the GPS
-kept. `the_web_preset_removes_the_location`. Not covered: a location written in embedded XMP (`exif:GPSLatitude`),
-which no save carries yet.
+kept. `the_web_preset_removes_the_location`. A location in embedded XMP is removed too (below).
 
 ## WebP is written lossless, and says so (2026-11-03)
 The `image` crate's WebP encoder is lossless only, but the dialog offered *Archive (WebP 90%)* and a quality slider
@@ -381,7 +396,10 @@ Found while writing the baseline (2026-11-01). Each is a candidate until measure
 
 ## What a re-encoded save still loses
 Left over from carrying EXIF and ICC across (above), each measured or read in `image` 0.25.10:
-- **XMP embedded in the file** (Lightroom, darktable, keywords) — `image` has no XMP encoder.
+- **Embedded XMP in a WebP or TIFF output.** WebP would need its `XMP ` chunk spliced into the VP8X container
+  `image` writes (and the VP8X flag set); TIFF an XMP tag (700) added to an IFD `image` has already laid out.
+  Recommendation: leave it until someone saves a tagged photo as WebP or TIFF and misses the keywords; JPEG and
+  PNG are what a tagged photo is shared as. A RAW or JPEG XL source's own XMP is not read either.
 
 
 

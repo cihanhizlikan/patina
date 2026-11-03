@@ -11,8 +11,9 @@
 //! Where `image` cannot read the source, this module does: a RAW's EXIF is
 //! rebuilt with kamadak-exif, a JPEG XL's comes from its Exif box, and a
 //! TIFF's profile from its tag 34675. The saved EXIF's pixel size is the
-//! saved image's. XMP embedded in the file is not carried: `image` has no
-//! XMP encoder.
+//! saved image's. XMP embedded in a JPEG, PNG, TIFF or GIF source (read by
+//! `image`) is written into a JPEG or PNG by this module after encoding, as
+//! `image` has no XMP encoder; a WebP or TIFF output does not carry it.
 
 use std::io::Cursor;
 use std::path::Path;
@@ -28,6 +29,9 @@ pub struct Metadata {
     pub icc: Option<Vec<u8>>,
     /// The TIFF bytes of the EXIF block, already true of upright pixels.
     pub exif: Option<Vec<u8>>,
+    /// The XMP packet embedded in the file (keywords, caption, rating,
+    /// Lightroom's settings), UTF-8, its orientation already upright.
+    pub xmp: Option<Vec<u8>>,
 }
 
 impl Metadata {
@@ -42,17 +46,23 @@ impl Metadata {
         // `image` opens neither RAW nor JPEG XL; RAW files (TIFF-based) are
         // read with kamadak-exif, JPEG XL from its Exif box. Their pixels are
         // rendered to sRGB by the decoders, so no profile is carried.
-        let (icc, exif) = if crate::loader::is_raw_ext(&ext) {
-            (None, rebuilt_exif(path))
+        let (icc, exif, xmp) = if crate::loader::is_raw_ext(&ext) {
+            (None, rebuilt_exif(path), None)
         } else if ext == "jxl" {
-            (None, std::fs::read(path).ok().and_then(|b| jxl_exif(&b)))
+            (
+                None,
+                std::fs::read(path).ok().and_then(|b| jxl_exif(&b)),
+                None,
+            )
         } else {
             let Ok(mut dec) = decoder(path) else {
                 return Self::default();
             };
             let icc = dec.icc_profile().ok().flatten().or_else(|| tiff_icc(path));
-            (icc, dec.exif_metadata().ok().flatten())
+            let xmp = dec.xmp_metadata().ok().flatten();
+            (icc, dec.exif_metadata().ok().flatten(), xmp)
         };
+        let xmp = xmp.and_then(|xmp| upright_xmp(xmp, path));
         let exif = exif.and_then(|mut exif| {
             // An EXIF block that cannot be set upright is dropped, not
             // copied: an Orientation left in it would turn the image twice.
@@ -61,8 +71,80 @@ impl Metadata {
                 .ok()?;
             Some(exif)
         });
-        Self { icc, exif }
+        Self { icc, exif, xmp }
     }
+}
+
+/// `xmp` with `tiff:Orientation` set to 1, as the saved pixels are upright.
+/// A packet that is not UTF-8 is dropped: it cannot be edited safely, and
+/// an orientation left in it would turn the image twice in Lightroom.
+fn upright_xmp(xmp: Vec<u8>, path: &Path) -> Option<Vec<u8>> {
+    let Ok(mut text) = String::from_utf8(xmp) else {
+        log!(
+            "[save] embedded XMP of {} dropped: not UTF-8",
+            path.display()
+        );
+        return None;
+    };
+    if let Some(span) = crate::xmp::value_span(&text, "tiff:Orientation") {
+        text.replace_range(span, "1");
+    }
+    Some(text.into_bytes())
+}
+
+/// The XMP properties that say where a picture was taken: the GPS position
+/// and the place names IPTC and Photoshop record.
+const LOCATION_PROPERTIES: &[&str] = &[
+    "exif:GPS",
+    "photoshop:City",
+    "photoshop:State",
+    "photoshop:Country",
+    "Iptc4xmpCore:Location",
+    "Iptc4xmpCore:CountryCode",
+    "Iptc4xmpExt:LocationShown",
+    "Iptc4xmpExt:LocationCreated",
+];
+
+/// `text` without any property whose name starts with one of
+/// `LOCATION_PROPERTIES`, in attribute or element form. `None` when one is
+/// still there afterwards, in a shape this does not take apart.
+fn xmp_without_location(mut text: String) -> Option<String> {
+    for prefix in LOCATION_PROPERTIES {
+        let mut from = 0;
+        while let Some(found) = text[from..].find(prefix).map(|i| i + from) {
+            match property_span(&text, found) {
+                Some(span) => {
+                    text.replace_range(span.clone(), "");
+                    from = span.start;
+                }
+                None => from = found + prefix.len(),
+            }
+        }
+    }
+    let left = LOCATION_PROPERTIES.iter().any(|p| text.contains(p));
+    (!left).then_some(text)
+}
+
+/// The bytes of the property whose name starts at `at`: ` name="value"` for
+/// an attribute, `<name …>…</name>` or `<name …/>` for an element.
+fn property_span(text: &str, at: usize) -> Option<std::ops::Range<usize>> {
+    let rest = &text[at..];
+    let name_len = rest.find(|c: char| !(c.is_alphanumeric() || c == ':' || c == '_'))?;
+    let name = &rest[..name_len];
+    if text[..at].ends_with('<') {
+        let open_end = at + rest.find('>')? + 1;
+        if text[..open_end].ends_with("/>") {
+            return Some(at - 1..open_end);
+        }
+        let close = format!("</{name}>");
+        let end = open_end + text[open_end..].find(&close)? + close.len();
+        return Some(at - 1..end);
+    }
+    let after = rest[name_len..].strip_prefix('=')?;
+    let quote = after.chars().next().filter(|q| *q == '"' || *q == '\'')?;
+    let value_end = at + name_len + 2 + after[1..].find(quote)? + 1;
+    let start = text[..at].trim_end().len();
+    Some(start..value_end)
 }
 
 impl Metadata {
@@ -76,6 +158,14 @@ impl Metadata {
                 self.exif = None;
             }
         }
+        self.xmp = self.xmp.take().and_then(|xmp| {
+            let text = String::from_utf8(xmp).ok()?;
+            let Some(text) = xmp_without_location(text) else {
+                log!("[save] embedded XMP dropped, its location could not be removed");
+                return None;
+            };
+            Some(text.into_bytes())
+        });
         self
     }
 }
@@ -246,8 +336,103 @@ pub fn to_path(
             .write_to(&mut Cursor::new(&mut out), ImageFormat::Bmp)?,
         _ => dynamic.write_to(&mut Cursor::new(&mut out), ImageFormat::from_path(path)?)?,
     }
+    // `image` writes no XMP; it goes in after encoding, for the formats a
+    // camera roll and Lightroom read it from.
+    if let Some(xmp) = &meta.xmp {
+        out = match ext.as_deref() {
+            Some("jpg" | "jpeg") => with_jpeg_xmp(&out, xmp)?,
+            Some("png") => with_png_xmp(&out, xmp)?,
+            other => {
+                log!(
+                    "[save] embedded XMP not carried into .{}",
+                    other.unwrap_or("")
+                );
+                out
+            }
+        };
+    }
     crate::xmp::write_atomic(path, &out)
         .with_context(|| format!("could not write {}", path.display()))
+}
+
+/// The identifier that opens an XMP APP1 segment.
+const XMP_ID: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
+
+/// `jpeg` with an APP1 segment holding `xmp`, after the leading APPn
+/// segments (JFIF, EXIF, ICC). An XMP packet too large for one segment
+/// would need Extended XMP, which is not written: it is left out.
+fn with_jpeg_xmp(jpeg: &[u8], xmp: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let Ok(len) = u16::try_from(2 + XMP_ID.len() + xmp.len()) else {
+        log!(
+            "[save] embedded XMP of {} bytes left out: over one JPEG segment",
+            xmp.len()
+        );
+        return Ok(jpeg.to_vec());
+    };
+    if !jpeg.starts_with(&[0xFF, 0xD8]) {
+        return Err(anyhow!("the encoded JPEG has no start marker"));
+    }
+    let mut at = 2;
+    while let Some(&[0xFF, marker, hi, lo]) = jpeg.get(at..at + 4) {
+        if !(0xE0..=0xEF).contains(&marker) {
+            break;
+        }
+        at += 2 + u16::from_be_bytes([hi, lo]) as usize;
+    }
+    let at = at.min(jpeg.len());
+    Ok([
+        &jpeg[..at],
+        &[0xFF, 0xE1],
+        &len.to_be_bytes(),
+        XMP_ID,
+        xmp,
+        &jpeg[at..],
+    ]
+    .concat())
+}
+
+/// `png` with an iTXt chunk holding `xmp` under the keyword readers look
+/// for, before the first IDAT.
+fn with_png_xmp(png: &[u8], xmp: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let truncated = || anyhow!("the encoded PNG is malformed");
+    let mut at = 8;
+    loop {
+        let head = png.get(at..at + 8).ok_or_else(truncated)?;
+        if &head[4..8] == b"IDAT" {
+            break;
+        }
+        let len = u32::from_be_bytes(head[..4].try_into()?) as usize;
+        at += 12 + len;
+    }
+    // Keyword, NUL, uncompressed, method 0, no language, no translation.
+    let data = [&b"XML:com.adobe.xmp\0\0\0\0\0"[..], xmp].concat();
+    let len = u32::try_from(data.len())?;
+    let typed = [&b"iTXt"[..], &data].concat();
+    Ok([
+        &png[..at],
+        &len.to_be_bytes(),
+        &typed,
+        &crc32(&typed).to_be_bytes(),
+        &png[at..],
+    ]
+    .concat())
+}
+
+/// CRC-32 as PNG chunks use it (ISO 3309), bit by bit: one chunk per save
+/// does not need the table.
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut c = !0u32;
+    for &b in bytes {
+        c ^= b as u32;
+        for _ in 0..8 {
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
+        }
+    }
+    !c
 }
 
 fn encode(
@@ -747,5 +932,101 @@ mod tests {
 
         assert!(to_path(&wrong, 0, &path, 95, None, &Metadata::read(&path)).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    /// An XMP packet as Lightroom embeds it: a keyword, a caption, a rating,
+    /// the orientation of the unturned pixels, and where it was taken.
+    const EMBEDDED_XMP: &str = r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmlns:tiff="http://ns.adobe.com/tiff/1.0/"
+    xmlns:exif="http://ns.adobe.com/exif/1.0/"
+    xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+   xmp:Rating="4"
+   tiff:Orientation="6"
+   exif:GPSLatitude="41,0.666667N"
+   photoshop:City="Istanbul">
+   <exif:GPSLongitude>28,58.5E</exif:GPSLongitude>
+   <dc:subject><rdf:Bag><rdf:li>galata</rdf:li></rdf:Bag></dc:subject>
+   <dc:description><rdf:Alt><rdf:li xml:lang="x-default">From the bridge</rdf:li></rdf:Alt></dc:description>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>"#;
+
+    /// The XMP the image decoder reads back from `path`, as text.
+    fn xmp_of(path: &Path) -> Option<String> {
+        let xmp = decoder(path).unwrap().xmp_metadata().unwrap()?;
+        Some(String::from_utf8(xmp).unwrap())
+    }
+
+    /// A JPEG source with `EMBEDDED_XMP` in an APP1 segment.
+    fn tagged_jpeg(path: &Path) {
+        let mut out = Vec::new();
+        JpegEncoder::new_with_quality(&mut out, 90)
+            .write_image(&[100; 8 * 8 * 3], 8, 8, ExtendedColorType::Rgb8)
+            .unwrap();
+        std::fs::write(path, with_jpeg_xmp(&out, EMBEDDED_XMP.as_bytes()).unwrap()).unwrap();
+    }
+
+    /// The XMP embedded in a source reaches a saved JPEG and PNG, where the
+    /// image decoder (zune-jpeg, the png crate with its CRC check) finds it:
+    /// keyword, caption and rating kept, the orientation made upright.
+    #[test]
+    fn embedded_xmp_is_carried_into_jpeg_and_png() {
+        let dir = TempDir::new("xmp");
+        let src = dir.0.join("tagged.jpg");
+        tagged_jpeg(&src);
+        let img = loaded(&src);
+        let meta = Metadata::read(&src);
+
+        for name in ["saved.jpg", "saved.png"] {
+            let dest = dir.0.join(name);
+            to_path(&img, 0, &dest, 90, None, &meta).unwrap();
+            let xmp = xmp_of(&dest).unwrap_or_else(|| panic!("{name}: no XMP"));
+            assert!(xmp.contains("<rdf:li>galata</rdf:li>"), "{name}");
+            assert!(xmp.contains("From the bridge"), "{name}");
+            assert!(xmp.contains(r#"xmp:Rating="4""#), "{name}");
+            assert!(xmp.contains(r#"tiff:Orientation="1""#), "{name}");
+            assert!(!xmp.contains(r#"tiff:Orientation="6""#), "{name}");
+            assert!(loaded(&dest).width == 8, "{name} still decodes");
+        }
+    }
+
+    /// Remove location takes the GPS position and the place names out of
+    /// the embedded XMP too, and leaves the rest of it.
+    #[test]
+    fn remove_location_takes_the_place_out_of_the_xmp() {
+        let dir = TempDir::new("xmp-gps");
+        let src = dir.0.join("tagged.jpg");
+        tagged_jpeg(&src);
+        let dest = dir.0.join("shared.jpg");
+        let meta = Metadata::read(&src).without_location();
+        to_path(&loaded(&src), 0, &dest, 90, None, &meta).unwrap();
+
+        let xmp = xmp_of(&dest).unwrap();
+        for gone in ["GPS", "41,0.666667N", "28,58.5E", "City", "Istanbul"] {
+            assert!(!xmp.contains(gone), "{gone} left in:\n{xmp}");
+        }
+        assert!(xmp.contains("<rdf:li>galata</rdf:li>"));
+        assert!(
+            xmp.contains(r#"tiff:Orientation="1">"#),
+            "the element stays closed:\n{xmp}"
+        );
+        let bytes = std::fs::read(&dest).unwrap();
+        assert!(!bytes.windows(8).any(|w| w == b"Istanbul"));
+    }
+
+    /// A location property in a shape the stripper does not take apart
+    /// drops the XMP whole rather than carry the place.
+    #[test]
+    fn xmp_with_an_unremovable_location_is_dropped() {
+        let odd = "<x><exif:GPSLatitude>41N</x>".to_string();
+        assert_eq!(xmp_without_location(odd), None);
+        let fine = "<x a=\"1\" exif:GPSAltitude='12'/>".to_string();
+        assert_eq!(xmp_without_location(fine).as_deref(), Some("<x a=\"1\"/>"));
     }
 }
