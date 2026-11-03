@@ -11,7 +11,8 @@ loader, navigator and path rules.
 - `src/editor.rs` — `EditParams`, the undo stack and `apply_edits`, the fixed-order pixel pipeline, the histogram.
 - `src/ui.rs` — the editor side panel: design tokens, icons, preset tiles, sliders.
 - `src/loader.rs` — decoding to straight RGBA8, magic-byte sniffing, wrong-extension recovery, RAW.
-- `src/nav.rs` — the sibling-file list for one directory, natural sort, wraparound navigation.
+- `src/nav.rs` — the sibling-file list for one directory, wraparound navigation.
+- `src/explorer_order.rs` — Explorer's sort order via `StrCmpLogicalW`; the one module allowed `unsafe`.
 - `src/exif.rs` — EXIF fields for the metadata panel. `src/xmp.rs` — rating and colour-label sidecars.
 - `src/orientation.rs` — saving a JPEG rotation or flip as its EXIF orientation, byte-exact otherwise.
 - `src/save.rs` — every other save: re-encoding, with the source's EXIF and ICC profile carried across.
@@ -48,7 +49,8 @@ loader, navigator and path rules.
 Carried over from the maintainer's other projects:
 - **Safe Rust.** Maintainer: *"If we're writing unmanaged code why are we writing code in Rust in the first
   place."* Before writing FFI, look for a maintained crate with a safe API. `unsafe` written to get past the borrow
-  checker is a design problem to restructure, never a fix. `unsafe_code = "forbid"` makes it a build error.
+  checker is a design problem to restructure, never a fix. `unsafe_code = "deny"` makes it a build error;
+  the single exception, `explorer_order.rs`, and what reopens it are in settled-decisions.md.
 - **Evidence, not reasoning.** A fix is finished when it is measured, not when the code looks right. A hypothesis
   built from reading code is a candidate, never a conclusion. A measured "nothing to do" is a deliverable.
 - **Take a position and argue it.** An open question wants a recommendation and what would change it, not a menu.

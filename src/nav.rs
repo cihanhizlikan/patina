@@ -1,14 +1,14 @@
 //! nav.rs — Directory-based image navigation.
 //!
-//! Maintains a human-sorted list of sibling image files in the same directory
-//! as the currently open file.  Navigation wraps around at both ends.
+//! Keeps the image files in the open file's directory, in Explorer's order
+//! (explorer_order.rs). Navigation wraps around at both ends.
 
 use crate::loader::is_supported;
 use std::path::{Path, PathBuf};
 
 #[derive(Default)]
 pub struct DirNavigator {
-    /// All image files in the current directory, human-sorted.
+    /// All image files in the current directory, in Explorer's order.
     files: Vec<PathBuf>,
     /// Index of the currently displayed file.
     index: usize,
@@ -180,22 +180,7 @@ impl DirNavigator {
             })
             .collect();
 
-        // The sort allocates two Strings per comparison via to_string_lossy().
-        // This is acceptable: rebuild() runs only on directory change, not
-        // per-navigation, and avoids caching complexity.
-        paths.sort_by(|a, b| {
-            let a = a
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_lowercase();
-            let b = b
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_lowercase();
-            human_sort(&a, &b)
-        });
+        crate::explorer_order::sort(&mut paths);
         self.files = paths;
     }
 }
@@ -205,49 +190,6 @@ impl DirNavigator {
 enum Direction {
     Forward,
     Backward,
-}
-
-// ── Human / natural sort ──────────────────────────────────────────────────────
-//
-// Compares runs of digits numerically so that "img2" < "img10".
-
-fn human_sort(a: &str, b: &str) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    let mut ai = a.chars().peekable();
-    let mut bi = b.chars().peekable();
-
-    loop {
-        match (ai.peek().copied(), bi.peek().copied()) {
-            (None, None) => return Ordering::Equal,
-            (None, _) => return Ordering::Less,
-            (_, None) => return Ordering::Greater,
-            (Some(ac), Some(bc)) if ac.is_ascii_digit() && bc.is_ascii_digit() => {
-                let ord = consume_number(&mut ai).cmp(&consume_number(&mut bi));
-                if ord != Ordering::Equal {
-                    return ord;
-                }
-            }
-            (Some(ac), Some(bc)) => {
-                let ord = ac.cmp(&bc);
-                if ord != Ordering::Equal {
-                    return ord;
-                }
-                ai.next();
-                bi.next();
-            }
-        }
-    }
-}
-
-/// Consume and return a run of ASCII digits as a `u64`, saturating on overflow.
-fn consume_number(iter: &mut std::iter::Peekable<std::str::Chars<'_>>) -> u64 {
-    let mut n = 0u64;
-    while let Some(&c) = iter.peek() {
-        let Some(digit) = c.to_digit(10) else { break };
-        n = n.saturating_mul(10).saturating_add(digit as u64);
-        iter.next();
-    }
-    n
 }
 
 // ── Test helpers (compiled only under `cargo test`) ───────────────────────────

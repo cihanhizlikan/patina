@@ -57,6 +57,13 @@ rawler = { version = "0.6", default-features = false }
 # ── EXIF/IPTC metadata ────────────────────────────────────────────────────────
 kamadak-exif = "0.5"
 
+# ── Explorer's sort order ─────────────────────────────────────────────────────
+# Declares StrCmpLogicalW for explorer_order.rs, the one module allowed
+# `unsafe`. Bindings only, no code of its own; 0.61.2 was already in
+# Cargo.lock through eframe's dependencies, so nothing new is downloaded.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_UI_Shell"] }
+
 # ── Lints ─────────────────────────────────────────────────────────────────────
 # The bans in clippy.toml are architecture rules, not style, so a
 # violation stops the build instead of joining a warning count.
@@ -64,10 +71,12 @@ kamadak-exif = "0.5"
 [lints.clippy]
 disallowed_methods = "deny"
 
-# Safe Rust only. `forbid`, not `deny`: no `#[allow]` can re-open it, so
-# adding `unsafe` means changing this line and docs/settled-decisions.md.
+# Safe Rust everywhere but explorer_order.rs, whose `#![allow]` covers the
+# one FFI call Explorer's sort order needs. `deny`, not `forbid`, only so that
+# allow can exist; any other `unsafe` is still a build error, and a second
+# exception means changing docs/settled-decisions.md first.
 [lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 
 [build-dependencies]
 # build.rs embeds patina.ico and the version block in Patina.exe. Unmaintained

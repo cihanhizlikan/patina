@@ -27,6 +27,7 @@ macro_rules! log {
 
 mod editor;
 mod exif;
+mod explorer_order;
 mod hud;
 mod keymap;
 mod loader;

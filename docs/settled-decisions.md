@@ -139,6 +139,25 @@ live `&mut`, undefined behaviour whatever the callee did. `draw_modal` now only 
 returns the clicked `ModalAction`; `draw_ui` applies it. Borrow-checker friction is answered by restructuring.
 Should Windows ever force an FFI call (as `StrCmpLogicalW` did for Devoid Viewer), it goes in one module, `forbid`
 becomes `deny` with that module's `allow`, and this entry is revised in the same commit.
+**Revised 2026-11-03, the one exception: `src/explorer_order.rs`.** `unsafe_code` is now `deny`, and that module's
+`#![allow(unsafe_code)]` covers a single call to `StrCmpLogicalW` (next entry). Everywhere else `unsafe` is still a
+build error — checked by adding an `unsafe {}` to `view.rs`: *usage of an `unsafe` block*, error. A second
+exception is decided here first, with the measurement that forced it.
+
+## File names sort as Explorer sorts them, with Windows' own comparison (2026-11-03)
+`human_sort` lowercased names and compared code points, so every accented or Turkish name sorted after `z`.
+Measured against `StrCmpLogicalW` (called from PowerShell, outside Patina) on a tr-TR machine, 71 realistic names
+— camera names, `- Copy`, `(2)`, `_edit`, dates, Turkish and accented names: `human_sort` put 15 out of place;
+ICU4X's `icu_collator` with the Turkish tailoring and numeric ordering, the best safe crate, put 7 (on 101 names
+with punctuation edge cases, 31 and 23). What no fixed rule reproduces is Windows' own: the user's locale for
+letters (Turkish `ç` after `cz`), its punctuation weights (`IMG_0002.jpg` before `IMG_0002_edit.jpg`, which ICU
+reverses), and its tie order (`001` `01` `1`). So on Windows `explorer_order::sort` calls `StrCmpLogicalW`, exact by
+construction, with names encoded to UTF-16 once per file and a raw comparison breaking Explorer's ties, so the
+order never follows the listing. Elsewhere the natural sort stays. **The maintainer chose this over ICU4X**
+(2026-11-03), which would have kept Patina free of `unsafe` at ~1.3 MB and a locale crate, 7 names off.
+`windows-sys` 0.61 declares the call; it was already in `Cargo.lock` through eframe, so no new crate.
+What would move this: a maintained crate exposing `StrCmpLogicalW` (or `CompareStringEx` with
+`SORT_DIGITSASNUMBERS`) behind a safe API — then the exception goes and `forbid` returns.
 
 ## Default rustfmt, gated (2026-11-01)
 Decided by the maintainer before the UI rework, which rewrites most of `ui.rs` and `main.rs`: one formatting-only
@@ -336,7 +355,3 @@ The `image` crate's WebP encoder is lossless only, so the *Archive (WebP 90%)* p
 quality field does nothing (the code says so; the UI does not).
 
 
-## Sort order differs from Explorer
-`human_sort` lowercases and compares code points, so accented names sort after `z`. Devoid Viewer now uses
-`StrCmpLogicalW` on Windows, which is FFI. Patina forbids `unsafe`, so matching Explorer means either a
-maintained crate that wraps the call safely or a deliberate exception under the `unsafe` decision above.
