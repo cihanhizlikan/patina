@@ -371,6 +371,17 @@ An archive should not lose data on each save; small files for the web are the We
 a real need for small WebP output (a site that takes only WebP), and then libwebp with the container written and
 tested on disk.
 
+## The help reflows to fit the window; its text keeps its size (2026-11-03)
+The help (H) was one fixed 480 px column of 35 rows, about 870 px tall, and was clipped in any shorter window —
+a 1366×768 laptop, or a window sized to a landscape photo. `help_layout` now picks one column when the rows fit;
+two when they do not and the window is wide enough, cut at the row that makes the taller column shortest (a
+section may run on into the second, its caption repeated); columns narrow from 480 to 380 px with the
+descriptions wrapping; and only past that do the rows scroll, title and footer staying put. **The text is not
+shrunk**: at 12 px it is already small, and reflowing loses nothing. Measured by
+`the_help_fits_the_window`: at 1920×1080, 1366×768, 1280×720, 1024×640 and 900×600 every row is painted whole and
+unclipped inside the window (one column at 1080 p, two below); at 640×400 the panel stays inside the window and
+scrolls. Found on the way: the two mouse rows meant for *Everywhere* (Ctrl+Scroll, Drag) were never drawn.
+
 ## The icon is in the executable and on the window (2026-11-03)
 There was no `build.rs`, so `Patina.exe` carried no icon (Explorer, pins and the installer's shortcuts showed the
 generic one), and `load_icon` returned winit's blank, so the title bar and Alt+Tab had none either — the old note

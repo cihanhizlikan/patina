@@ -2261,8 +2261,135 @@ fn consume_shortcut(i: &mut egui::InputState, mods: egui::Modifiers, key: egui::
 
 // ── Help modal ────────────────────────────────────────────────────────────────
 
+/// A titled list of (keys, what they do) rows in the help.
+type HelpSection = (&'static str, Vec<(String, &'static str)>);
+
+/// The help's sections: the mode on screen first, then the other, then what
+/// works in both. Both modes are always listed, so the help is a reference,
+/// not just a list of what works right now.
+fn help_sections(in_editor: bool) -> Vec<HelpSection> {
+    use keymap::Mode;
+    let rows = |mode: Mode| {
+        let keys = keymap::KEYMAP
+            .iter()
+            .filter(|b| b.mode == mode)
+            .map(|b| (keymap::keys_label(b.keys), b.what));
+        let mouse = keymap::MOUSE_HELP
+            .iter()
+            .filter(|m| m.0 == mode)
+            .map(|&(_, gesture, what)| (gesture.to_string(), what));
+        keys.chain(mouse).collect()
+    };
+    let (first, second) = if in_editor {
+        ((Mode::Editor, "EDITOR"), (Mode::Viewer, "VIEWER"))
+    } else {
+        ((Mode::Viewer, "VIEWER"), (Mode::Editor, "EDITOR"))
+    };
+    vec![
+        (first.1, rows(first.0)),
+        (second.1, rows(second.0)),
+        ("EVERYWHERE", rows(Mode::Both)),
+    ]
+}
+
+const HELP_ROW_H: f32 = 20.0;
+/// A section's caption and the space around it.
+const HELP_SECTION_H: f32 = 26.0;
+const HELP_KEY_W: f32 = 170.0;
+const HELP_COLUMN_W: f32 = 480.0;
+/// The narrowest a column gets before the help stays in one and scrolls;
+/// the descriptions wrap below 480.
+const HELP_MIN_COLUMN_W: f32 = 380.0;
+const HELP_GAP: f32 = 32.0;
+/// The frame's inner margin, on each side.
+const HELP_MARGIN: f32 = 24.0;
+/// Kept clear between the panel and the window's edge.
+const HELP_EDGE: f32 = 16.0;
+/// The title above the rows and the footer below them.
+const HELP_CHROME_H: f32 = 120.0;
+
+/// How the help is laid out in a window of `screen` size.
+#[derive(Debug, PartialEq)]
+struct HelpLayout {
+    /// The panel's content width.
+    width: f32,
+    /// One column's width: the panel's, or half of it less the gap.
+    column: f32,
+    /// The most the rows may take before they scroll.
+    body_height: f32,
+    /// Two columns, the second starting at row `.1` of section `.0`; `None`
+    /// for one.
+    split: Option<(usize, usize)>,
+}
+
+/// The rows of `sections` in two columns, the second starting at row `r` of
+/// section `k`. A section cut in two shows its caption in both.
+fn split_sections(
+    sections: &[HelpSection],
+    (k, r): (usize, usize),
+) -> (Vec<HelpSection>, Vec<HelpSection>) {
+    let mut left = sections[..k].to_vec();
+    let mut right = Vec::new();
+    if let Some((title, rows)) = sections.get(k) {
+        if r > 0 {
+            left.push((*title, rows[..r].to_vec()));
+        }
+        right.push((*title, rows[r..].to_vec()));
+        right.extend_from_slice(&sections[k + 1..]);
+    }
+    (left, right)
+}
+
+fn help_height(sections: &[HelpSection]) -> f32 {
+    sections
+        .iter()
+        .map(|(_, rows)| HELP_SECTION_H + rows.len() as f32 * HELP_ROW_H)
+        .sum()
+}
+
+/// One column when the rows fit; two when they do not and the window is wide
+/// enough, split at the row that makes the taller column shortest (a section
+/// may run on into the second); and the rows scroll when even that does not
+/// fit. Text keeps its size: 12 px is already small.
+fn help_layout(screen: egui::Vec2, sections: &[HelpSection]) -> HelpLayout {
+    let inner = screen - egui::Vec2::splat(2.0 * (HELP_EDGE + HELP_MARGIN));
+    let body_height = (inner.y - HELP_CHROME_H).max(HELP_ROW_H * 3.0);
+    let two_wide = (2.0 * HELP_COLUMN_W + HELP_GAP).min(inner.x);
+    let fits_two = two_wide >= 2.0 * HELP_MIN_COLUMN_W + HELP_GAP;
+    let split = (help_height(sections) > body_height && fits_two)
+        .then(|| {
+            let cuts = sections
+                .iter()
+                .enumerate()
+                .flat_map(|(k, (_, rows))| (0..rows.len()).map(move |r| (k, r)))
+                .filter(|&cut| cut != (0, 0));
+            cuts.min_by(|&a, &b| {
+                let taller = |cut| {
+                    let (l, r) = split_sections(sections, cut);
+                    help_height(&l).max(help_height(&r))
+                };
+                taller(a).total_cmp(&taller(b))
+            })
+        })
+        .flatten();
+    let (width, column) = match split {
+        Some(_) => (two_wide, (two_wide - HELP_GAP) / 2.0),
+        None => {
+            let w = HELP_COLUMN_W.min(inner.x).max(160.0);
+            (w, w)
+        }
+    };
+    HelpLayout {
+        width,
+        column,
+        body_height,
+        split,
+    }
+}
+
 fn draw_help_modal(ctx: &egui::Context, in_editor: bool, show: &mut bool) {
     use ui::tok::{ACCENT, BORDER, SURFACE, TEXT_1, TEXT_2, TEXT_3};
+    let sections = help_sections(in_editor);
 
     ctx.layer_painter(egui::LayerId::new(
         egui::Order::Background,
@@ -2283,9 +2410,10 @@ fn draw_help_modal(ctx: &egui::Context, in_editor: bool, show: &mut bool) {
                 .inner_margin(24.0),
         )
         .show(ctx, |ui| {
-            ui.set_width(480.0);
             ui.visuals_mut().override_text_color = None;
             ui.visuals_mut().widgets.noninteractive.fg_stroke.color = TEXT_1;
+            let layout = help_layout(ctx.screen_rect().size(), &sections);
+            ui.set_width(layout.width);
 
             ui.label(
                 egui::RichText::new("Keyboard Shortcuts")
@@ -2294,56 +2422,55 @@ fn draw_help_modal(ctx: &egui::Context, in_editor: bool, show: &mut bool) {
             );
             ui.add_space(12.0);
 
-            // Two-column layout: key | description
-            let row = |ui: &mut egui::Ui, key: &str, desc: &str| {
-                ui.horizontal(|ui| {
-                    let (_, kr) =
-                        ui.allocate_exact_size(egui::vec2(170.0, 20.0), egui::Sense::hover());
-                    ui.painter().text(
-                        kr.rect.left_center(),
-                        egui::Align2::LEFT_CENTER,
-                        key,
-                        egui::FontId::monospace(12.0),
-                        ACCENT,
-                    );
-                    ui.label(egui::RichText::new(desc).color(TEXT_1).size(12.0));
+            let key_w = HELP_KEY_W.min(layout.column * 0.4);
+            let column = |ui: &mut egui::Ui, sections: &[HelpSection]| {
+                for (i, (title, rows)) in sections.iter().enumerate() {
+                    if i > 0 {
+                        ui.add_space(8.0);
+                    }
+                    ui.label(egui::RichText::new(*title).color(TEXT_3).size(ui::CAPTION));
+                    ui.add_space(2.0);
+                    // A grid, so a description that wraps in a narrow window
+                    // keeps its key beside its first line.
+                    // Keyed by the column's id too: a section cut in two
+                    // has a grid in each.
+                    egui::Grid::new(ui.id().with(("help_rows", *title)))
+                        .num_columns(2)
+                        .min_col_width(key_w)
+                        .min_row_height(HELP_ROW_H)
+                        .spacing([0.0, 0.0])
+                        .show(ui, |ui| {
+                            for (key, what) in rows {
+                                ui.label(
+                                    egui::RichText::new(key)
+                                        .font(egui::FontId::monospace(12.0))
+                                        .color(ACCENT),
+                                );
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(*what).color(TEXT_1).size(12.0),
+                                    )
+                                    .wrap(true),
+                                );
+                                ui.end_row();
+                            }
+                        });
+                }
+            };
+            // Scrolling only when even the layout that fits best does not.
+            egui::ScrollArea::vertical()
+                .max_height(layout.body_height)
+                .show(ui, |ui| match layout.split {
+                    Some(cut) => {
+                        let (left, right) = split_sections(&sections, cut);
+                        ui.spacing_mut().item_spacing.x = HELP_GAP;
+                        ui.columns(2, |cols| {
+                            column(&mut cols[0], &left);
+                            column(&mut cols[1], &right);
+                        });
+                    }
+                    None => column(ui, &sections),
                 });
-            };
-            let section = |ui: &mut egui::Ui, title: &str| {
-                ui.add_space(8.0);
-                ui.label(egui::RichText::new(title).color(TEXT_3).size(ui::CAPTION));
-                ui.add_space(2.0);
-            };
-
-            // The mode on screen first; both lists are always there, so the
-            // help is a reference, not just a list of what works right now.
-            let order = if in_editor {
-                [
-                    (keymap::Mode::Editor, "EDITOR"),
-                    (keymap::Mode::Viewer, "VIEWER"),
-                ]
-            } else {
-                [
-                    (keymap::Mode::Viewer, "VIEWER"),
-                    (keymap::Mode::Editor, "EDITOR"),
-                ]
-            };
-            for (mode, title) in order {
-                section(ui, title);
-                for b in keymap::KEYMAP.iter().filter(|b| b.mode == mode) {
-                    row(ui, &keymap::keys_label(b.keys), b.what);
-                }
-                for &(_, gesture, what) in keymap::MOUSE_HELP.iter().filter(|m| m.0 == mode) {
-                    row(ui, gesture, what);
-                }
-            }
-            section(ui, "EVERYWHERE");
-            for b in keymap::KEYMAP
-                .iter()
-                .filter(|b| b.mode == keymap::Mode::Both)
-            {
-                row(ui, &keymap::keys_label(b.keys), b.what);
-            }
 
             ui.add_space(12.0);
             ui.separator();
@@ -4743,5 +4870,92 @@ mod keyboard_tests {
 
         frame(&mut app, &ctx, vec![press(Key::Num0, Modifiers::NONE)]);
         assert_eq!(xmp::read_labels(&path).rating, 0);
+    }
+
+    /// The help at `size`: each text it paints, and whether it is wholly
+    /// visible — inside the window and not clipped by a scroll area.
+    fn help_at(size: egui::Vec2) -> (Vec<(String, bool)>, egui::Rect) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut app = App::new(tx, rx);
+        app.show_help = true;
+        let ctx = egui::Context::default();
+        ui::install_fonts(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        let mut out = None;
+        // A window takes a few frames to settle on its size.
+        for _ in 0..12 {
+            let raw = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            out = Some(ctx.run(raw, |ctx| app.draw_ui(ctx)));
+        }
+        let texts = out
+            .unwrap()
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => {
+                    let rect = t.galley.rect.translate(t.pos.to_vec2());
+                    let seen = s.clip_rect.expand(0.5).contains_rect(rect)
+                        && screen.expand(0.5).contains_rect(rect);
+                    Some((t.galley.text().to_owned(), seen))
+                }
+                _ => None,
+            })
+            .collect();
+        let panel = ctx
+            .memory(|m| m.area_rect(egui::Id::new("help_modal")))
+            .unwrap();
+        (texts, panel)
+    }
+
+    /// The help fits the window: every row whole on screen at the sizes a
+    /// laptop or a photo-sized window gives, in one column where it fits and
+    /// two where it is short; in a window too small for that, the panel
+    /// still sits inside it and the rows scroll.
+    #[test]
+    fn the_help_fits_the_window() {
+        let rows: Vec<String> = help_sections(false)
+            .into_iter()
+            .flat_map(|(_, rows)| rows.into_iter().map(|(_, what)| what.to_string()))
+            .collect();
+        assert!(
+            rows.iter().any(|r| r == "Move a zoomed image"),
+            "Both's mouse rows"
+        );
+
+        for (w, h) in [
+            (1920.0, 1080.0),
+            (1366.0, 768.0),
+            (1280.0, 720.0),
+            (1024.0, 640.0),
+            (900.0, 600.0),
+        ] {
+            let size = egui::vec2(w, h);
+            let (texts, panel) = help_at(size);
+            assert!(
+                egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains_rect(panel),
+                "{w}×{h}: panel {panel:?}"
+            );
+            for row in &rows {
+                assert!(
+                    texts.iter().any(|(t, seen)| t == row && *seen),
+                    "{w}×{h}: {row:?} not wholly visible"
+                );
+            }
+            let layout = help_layout(size, &help_sections(false));
+            eprintln!("{w}×{h}: {layout:?}, panel {:?}", panel.size());
+        }
+
+        let small = egui::vec2(640.0, 400.0);
+        let (texts, panel) = help_at(small);
+        assert!(
+            egui::Rect::from_min_size(egui::Pos2::ZERO, small).contains_rect(panel),
+            "panel {panel:?}"
+        );
+        assert!(texts
+            .iter()
+            .any(|(t, seen)| t == "H or Esc to close" && *seen));
     }
 }
