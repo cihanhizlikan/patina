@@ -20,8 +20,8 @@ tiles. The viewer keeps its zero-chrome canvas. The editor rail is reorganised a
 ## Foundations
 
 1. ~~**rustfmt.**~~ Done — see settled-decisions.md.
-2. ~~**Logging.**~~ Done — see settled-decisions.md. **Still owed before a release**: the log needs a more
-   elegant way in than a file path, e.g. *Help → Open log folder*, or a *Copy log* button on the error dialog.
+2. ~~**Logging.**~~ Done — see settled-decisions.md. The help overlay shows the log's path and opens its folder,
+   and a second instance appends to the running one's log instead of moving it away.
 3. ~~**Windows-app basics.**~~ Done — the title follows navigation (`● IMG_0412.jpg — 12 / 129 — Patina`), one
    keymap table (`src/keymap.rs`) drives the handler and the help, Tab is egui's, G cycles Off → Thirds → Golden.
 4. ~~**Theme foundation.**~~ Done — tokens, one button, Inter, pinned dark theme; see settled-decisions.md.

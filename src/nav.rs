@@ -226,7 +226,7 @@ mod tests {
 
     fn nav(files: &[&str], current: &str) -> DirNavigator {
         DirNavigator::from_list(
-            files.iter().map(|s| PathBuf::from(s)).collect(),
+            files.iter().map(PathBuf::from).collect(),
             Path::new(current),
         )
     }

@@ -216,8 +216,7 @@ fn clean_string(s: &str) -> String {
 /// Format shutter speed as a fraction when < 1s, otherwise as decimal seconds.
 fn format_shutter(s: &str) -> String {
     // exif display_value returns "1/250 s" or "2 s" style already — clean it up.
-    let s = s.replace(" s", "s").replace("s", "s");
-    s
+    s.replace(" s", "s")
 }
 
 /// Format aperture as f/2.8 style.

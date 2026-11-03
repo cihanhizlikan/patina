@@ -8,7 +8,6 @@ use egui::{
     Color32, Context, Frame, Margin, Rect, Response, RichText, Rounding, ScrollArea, Sense, Stroke,
     TextureHandle, TextureOptions, Ui, Vec2,
 };
-use egui_extras;
 
 // ── Colour tokens ─────────────────────────────────────────────────────────────
 

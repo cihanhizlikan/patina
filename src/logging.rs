@@ -8,18 +8,20 @@
 //!   Windows  %LOCALAPPDATA%\Patina\patina.log
 //!   Linux    $XDG_STATE_HOME/patina/patina.log, else ~/.local/state/patina/
 //!
-//! The previous run is kept as `patina.log.1`. Release builds on Windows
-//! have no console (see main.rs), so the file is where their log is. A
-//! release still needs a friendlier way to it than a path (docs/roadmap.md).
+//! The previous run is kept as `patina.log.1`. An instance started while
+//! another runs (`patina.lock` is taken) appends to the same file, its
+//! lines tagged `#<pid>`, instead of moving the running one's log away.
+//! Release builds on Windows have no console (see main.rs), so the file is
+//! where their log is; the help overlay shows its path and opens its folder.
 //!
 //! The directory is chosen by which variables are set, not by `cfg`, so the
-//! code is the same on every platform.
+//! code is the same on every platform; only showing the file differs.
 
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 /// Patina's own lines from Info up; dependencies' from Warn up, since wgpu
@@ -30,6 +32,20 @@ const DEP_LEVEL: log::LevelFilter = log::LevelFilter::Warn;
 struct Logger {
     start: Instant,
     file: Option<Mutex<File>>,
+    /// `#<pid> ` on every line of an instance that shares the file with an
+    /// earlier one still running; empty for the instance that owns it.
+    tag: String,
+    /// `patina.lock`, held for as long as the logger lives (the process):
+    /// while it is, no later instance starts the file afresh under this one.
+    _lock: Option<File>,
+}
+
+/// The log file this process writes, set once by `init`.
+static PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// The log file this process writes, if it has one.
+pub fn path() -> Option<&'static Path> {
+    PATH.get().map(PathBuf::as_path)
 }
 
 impl log::Log for Logger {
@@ -73,16 +89,18 @@ impl Logger {
         let t = self.start.elapsed();
         if is_own(r.target()) {
             format!(
-                "[{:6}.{:03}] {}\n",
+                "[{:6}.{:03}] {}{}\n",
                 t.as_secs(),
                 t.subsec_millis(),
+                self.tag,
                 r.args()
             )
         } else {
             format!(
-                "[{:6}.{:03}] {} {}: {}\n",
+                "[{:6}.{:03}] {}{} {}: {}\n",
                 t.as_secs(),
                 t.subsec_millis(),
+                self.tag,
                 r.level(),
                 r.target(),
                 r.args()
@@ -99,11 +117,24 @@ fn is_own(target: &str) -> bool {
 /// build without a console still leaves its reason in the file. Call once,
 /// first thing in `main`.
 pub fn init() {
-    let file = log_dir(|k| std::env::var_os(k)).and_then(|dir| open_log(&dir));
-    let path = file.as_ref().map(|(_, p)| p.display().to_string());
+    let log = log_dir(|k| std::env::var_os(k)).and_then(|dir| open_log(&dir));
+    let path = log.as_ref().map(|l| l.path.display().to_string());
+    let tag = match &log {
+        Some(l) if l.lock.is_none() => format!("#{} ", std::process::id()),
+        _ => String::new(),
+    };
+    let (file, lock) = match log {
+        Some(l) => {
+            let _ = PATH.set(l.path);
+            (Some(Mutex::new(l.file)), l.lock)
+        }
+        None => (None, None),
+    };
     let logger = Logger {
         start: Instant::now(),
-        file: file.map(|(f, _)| Mutex::new(f)),
+        file,
+        tag,
+        _lock: lock,
     };
     if log::set_boxed_logger(Box::new(logger)).is_ok() {
         log::set_max_level(OWN_LEVEL.max(DEP_LEVEL));
@@ -122,6 +153,33 @@ pub fn init() {
     }));
 }
 
+/// Show `path` in the system's file manager: selected in Explorer, its
+/// folder elsewhere. Returns once the file manager has started.
+pub fn reveal(path: &Path) -> std::io::Result<()> {
+    let mut command = reveal_command(path);
+    let mut child = command.spawn()?;
+    // Explorer exits 1 even when it worked; the wait only reaps the child.
+    std::thread::spawn(move || child.wait());
+    Ok(())
+}
+
+#[cfg(windows)]
+fn reveal_command(path: &Path) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    // Explorer parses `/select,"path"` itself; std's quoting of the whole
+    // argument would put the quote before `/select`, which it ignores.
+    let mut c = std::process::Command::new("explorer");
+    c.raw_arg(format!("/select,\"{}\"", path.display()));
+    c
+}
+
+#[cfg(not(windows))]
+fn reveal_command(path: &Path) -> std::process::Command {
+    let mut c = std::process::Command::new("xdg-open");
+    c.arg(path.parent().unwrap_or(path));
+    c
+}
+
 /// The per-user directory for the log, from the environment `var` reads.
 fn log_dir(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     let set = |k| var(k).filter(|v| !v.is_empty()).map(PathBuf::from);
@@ -131,14 +189,38 @@ fn log_dir(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
         .or_else(|| set("HOME").map(|d| d.join(".local").join("state").join("patina")))
 }
 
-/// Start `patina.log` in `dir` afresh, keeping the last run as
-/// `patina.log.1`. None if the directory cannot be written; the app then
-/// logs to stderr only.
-fn open_log(dir: &Path) -> Option<(File, PathBuf)> {
+/// An open log file, and the lock that makes this process its owner.
+struct LogFile {
+    file: File,
+    path: PathBuf,
+    /// `patina.lock`, held exclusively; `None` when another instance holds
+    /// it and this one appends to that instance's file.
+    lock: Option<File>,
+}
+
+/// Open `patina.log` in `dir`. The first instance takes `patina.lock`,
+/// starts the file afresh and keeps the last run as `patina.log.1`; one
+/// started while it runs finds the lock taken and appends instead, so it
+/// never moves a log another instance is writing. None if the directory
+/// cannot be written; the app then logs to stderr only.
+fn open_log(dir: &Path) -> Option<LogFile> {
     std::fs::create_dir_all(dir).ok()?;
     let path = dir.join("patina.log");
-    let _ = std::fs::rename(&path, dir.join("patina.log.1"));
-    Some((File::create(&path).ok()?, path))
+    let lock = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("patina.lock"))
+        .ok()
+        .filter(|f| f.try_lock().is_ok());
+    if lock.is_some() {
+        let _ = std::fs::rename(&path, dir.join("patina.log.1"));
+        File::create(&path).ok()?;
+    }
+    // Append mode for the owner too: a handle that writes at its own offset
+    // would write over the lines a later instance appended.
+    let file = File::options().create(true).append(true).open(&path).ok()?;
+    Some(LogFile { file, path, lock })
 }
 
 #[cfg(test)]
@@ -184,12 +266,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("patina-log-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        let (mut f, path) = open_log(&dir).unwrap();
-        f.write_all(b"first run\n").unwrap();
-        drop(f);
-        let (mut f, _) = open_log(&dir).unwrap();
-        f.write_all(b"second run\n").unwrap();
-        drop(f);
+        let mut first = open_log(&dir).unwrap();
+        assert!(first.lock.is_some());
+        first.file.write_all(b"first run\n").unwrap();
+        drop(first);
+        let mut second = open_log(&dir).unwrap();
+        assert!(second.lock.is_some(), "the first run's lock went with it");
+        second.file.write_all(b"second run\n").unwrap();
+        let path = second.path.clone();
+        drop(second);
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "second run\n");
         assert_eq!(
@@ -199,14 +284,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// An instance started while another runs appends to its file instead
+    /// of moving it to `patina.log.1` under it, and the earlier run's log
+    /// in `patina.log.1` survives.
+    #[test]
+    fn a_second_instance_shares_the_running_one_s_file() {
+        let dir = std::env::temp_dir().join(format!("patina-log-two-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("patina.log"), "yesterday\n").unwrap();
+
+        let mut running = open_log(&dir).unwrap();
+        running.file.write_all(b"running\n").unwrap();
+        let mut second = open_log(&dir).unwrap();
+        assert!(second.lock.is_none(), "the lock is the running one's");
+        second.file.write_all(b"#2 second\n").unwrap();
+        running.file.write_all(b"running still\n").unwrap();
+        drop((running, second));
+
+        assert_eq!(
+            std::fs::read_to_string(dir.join("patina.log")).unwrap(),
+            "running\n#2 second\nrunning still\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("patina.log.1")).unwrap(),
+            "yesterday\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn lines_reach_the_file_and_dependencies_are_quieter() {
         let dir = std::env::temp_dir().join(format!("patina-log-lines-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let (f, path) = open_log(&dir).unwrap();
+        let log = open_log(&dir).unwrap();
+        let path = log.path;
         let logger = Logger {
             start: Instant::now(),
-            file: Some(Mutex::new(f)),
+            file: Some(Mutex::new(log.file)),
+            tag: String::new(),
+            _lock: log.lock,
         };
         let rec = |target, level, msg| {
             use log::Log;

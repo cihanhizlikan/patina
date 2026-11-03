@@ -320,7 +320,7 @@ fn decode_gif(path: &Path) -> Result<DecodedImage, BoxError> {
         .filter_map(|f| f.ok())
         .map(|f| {
             let (n, d) = f.delay().numer_denom_ms();
-            let delay_ms = if d == 0 { 100 } else { (n / d).max(20) };
+            let delay_ms = n.checked_div(d).map_or(100, |ms| ms.max(20));
             Frame {
                 pixels: f.into_buffer().into_raw(),
                 delay_ms,

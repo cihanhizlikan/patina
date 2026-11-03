@@ -176,7 +176,13 @@ Lines go to stderr and to `%LOCALAPPDATA%\Patina\patina.log`, or `$XDG_STATE_HOM
 `~/.local/state/patina/` (the XDG home for logs). The previous run is kept as `patina.log.1`, so a crash's log
 survives one relaunch and the file never grows across runs. A panic is logged before the default hook runs.
 `#![windows_subsystem = "windows"]` applies to release builds only; debug builds and `cargo run` keep the console.
-**Not a release yet**: a user cannot find the file without being told the path (docs/roadmap.md).
+**The way in** (2026-11-03): the help overlay (H) shows the log's path and a *Show in folder* link that selects the
+file in Explorer (`xdg-open` on its folder elsewhere). The help, because it is where someone looking for help
+already is, and it costs no new shortcut. **Two instances** (2026-11-03): each launch used to move `patina.log` to
+`.1` and start afresh, so a second window moved the first one's live log away and a third overwrote it. Now the
+first instance holds `patina.lock` (`File::try_lock`, std since 1.89) for its lifetime and alone rotates; one
+started while it runs appends to the same file with its lines tagged `#<pid>`. Appending rather than a file per
+instance, so there is still one file to look in. `a_second_instance_shares_the_running_one_s_file`.
 
 ## One palette, measured; one button; Inter (2026-11-01)
 **Colours** live only in `ui::tok` (`src/ui.rs`): green-tinted neutrals, and an accent that marks meaning —
@@ -287,9 +293,14 @@ decode that lands after the user has moved on is dropped: 2 entries at every ste
 stale before (`save_as_over_a_neighbour_is_not_served_stale_from_the_cache`, which fails without it).
 **The image left behind is decoded again, not moved into the cache**: after a save, the pixels in memory are the
 edit before encoding, not what the file decodes to, and the cache must hold what the file holds. **A neighbour
-changed by another program stays stale** until it stops being a neighbour: the directory watcher also fires for
-Patina's own sidecar writes, so flushing on it would throw the cache away on every rating. What would move this:
-a watcher event that names the file, so only that entry goes.
+changed by another program** (2026-11-03) was served stale until it stopped being a neighbour. Each decode now
+carries a stamp of the file it read, its modified time and length taken *before* the read, and `open_image` serves
+a cached decode only while the file still has that stamp; otherwise it decodes again. A stamp, not the directory
+watcher: the watcher also fires for Patina's own sidecar writes and can miss or coalesce events, and a stamp
+checked at the moment of use also covers a write that lands while the preload is decoding. The cost is one
+`metadata` call per arrow, not a read. `a_neighbour_changed_by_another_program_is_not_served_stale` overwrites a
+preloaded neighbour with a different picture and size and checks the arrow shows the new one. A copy that keeps
+both the old length and the old modified time would pass as unchanged; no editor writes that.
 
 ## The Fit reduction is made where the image is decoded (2026-11-02)
 Measured in the release build on 24 MP JPEGs (i5-12450H, UHD Graphics): every arrow held the window for

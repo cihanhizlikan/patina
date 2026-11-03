@@ -43,7 +43,8 @@ while cargo's own summary line (`warning: \`patina\` (bin) generated N warnings`
 not be counted. Cargo replays cached warnings for unchanged crates, so a no-op rebuild still reports them.
 
 A `disallowed_methods` hit is an **error** by design — see `clippy.toml` and `docs/settled-decisions.md`.
-Compare the warning count against the last commit's; a rise is a finding, triaged before it is reported.
+**Zero warnings is the bar** (reached 2026-11-03): any warning fails verification, as fmt does. Fix it in the
+same commit, or allow it at the site with a comment saying why.
 
 ## 3. Tests
 

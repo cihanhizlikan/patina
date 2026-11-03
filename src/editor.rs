@@ -470,7 +470,7 @@ pub fn apply_edits(src: &DecodedImage, params: &EditParams) -> DecodedImage {
     // All frames have the same dimensions; geometry transforms affect both.
     // Compute the output size from one frame and reuse it for all.
     let (_, out_w, out_h) = process_frame(
-        &src.frames
+        src.frames
             .first()
             .map(|f| f.pixels.as_slice())
             .unwrap_or(&[]),
@@ -1149,8 +1149,10 @@ mod tests {
     fn bw_preset_desaturates() {
         // A vivid red image should become grey after BW preset.
         let src = solid(16, 16, 255, 0, 0);
-        let mut p = EditParams::default();
-        p.preset = Preset::Bw;
+        let p = EditParams {
+            preset: Preset::Bw,
+            ..Default::default()
+        };
         let out = apply_edits(&src, &p);
         // In a greyscale image R == G == B for every pixel.
         for chunk in out.frames[0].pixels.chunks(4) {
@@ -1168,8 +1170,10 @@ mod tests {
     #[test]
     fn rotate_cw_swaps_dimensions() {
         let src = solid(64, 32, 0, 0, 0); // landscape
-        let mut p = EditParams::default();
-        p.rotation = Rotation::R90; // 90° CW
+        let p = EditParams {
+            rotation: Rotation::R90, // 90° CW
+            ..Default::default()
+        };
         let out = apply_edits(&src, &p);
         assert_eq!(out.width, 32, "rotated width should be original height");
         assert_eq!(out.height, 64, "rotated height should be original width");
@@ -1178,8 +1182,10 @@ mod tests {
     #[test]
     fn rotate_ccw_swaps_dimensions() {
         let src = solid(80, 20, 0, 0, 0);
-        let mut p = EditParams::default();
-        p.rotation = Rotation::R270; // 270° CW == 90° CCW
+        let p = EditParams {
+            rotation: Rotation::R270, // 270° CW == 90° CCW
+            ..Default::default()
+        };
         let out = apply_edits(&src, &p);
         assert_eq!(out.width, 20);
         assert_eq!(out.height, 80);
@@ -1188,8 +1194,10 @@ mod tests {
     #[test]
     fn rotate_180_preserves_dimensions() {
         let src = solid(50, 30, 0, 0, 0);
-        let mut p = EditParams::default();
-        p.rotation = Rotation::R180; // 180°
+        let p = EditParams {
+            rotation: Rotation::R180, // 180°
+            ..Default::default()
+        };
         let out = apply_edits(&src, &p);
         assert_eq!(out.width, 50);
         assert_eq!(out.height, 30);
@@ -1200,8 +1208,10 @@ mod tests {
     #[test]
     fn flip_h_preserves_dimensions() {
         let src = solid(40, 25, 0, 0, 0);
-        let mut p = EditParams::default();
-        p.flip_h = true;
+        let p = EditParams {
+            flip_h: true,
+            ..Default::default()
+        };
         let out = apply_edits(&src, &p);
         assert_eq!(out.width, 40);
         assert_eq!(out.height, 25);
@@ -1210,8 +1220,10 @@ mod tests {
     #[test]
     fn flip_v_preserves_dimensions() {
         let src = solid(40, 25, 0, 0, 0);
-        let mut p = EditParams::default();
-        p.flip_v = true;
+        let p = EditParams {
+            flip_v: true,
+            ..Default::default()
+        };
         let out = apply_edits(&src, &p);
         assert_eq!(out.width, 40);
         assert_eq!(out.height, 25);
@@ -1227,8 +1239,10 @@ mod tests {
             let i = (y * 8 * 4) as usize;
             src2.frames[0].pixels[i] = 10;
         }
-        let mut p = EditParams::default();
-        p.flip_h = true;
+        let p = EditParams {
+            flip_h: true,
+            ..Default::default()
+        };
         let once = apply_edits(&src2, &p);
         let twice = apply_edits(&once, &p);
         assert_eq!(twice.frames[0].pixels, src2.frames[0].pixels);
@@ -1246,16 +1260,20 @@ mod tests {
     #[test]
     fn changed_exposure_not_equal() {
         let a = EditParams::default();
-        let mut b = EditParams::default();
-        b.exposure = 0.5;
+        let b = EditParams {
+            exposure: 0.5,
+            ..Default::default()
+        };
         assert!(!crate::params_equal(&a, &b));
     }
 
     #[test]
     fn changed_preset_not_equal() {
         let a = EditParams::default();
-        let mut b = EditParams::default();
-        b.preset = Preset::Moody;
+        let b = EditParams {
+            preset: Preset::Moody,
+            ..Default::default()
+        };
         assert!(!crate::params_equal(&a, &b));
     }
 
@@ -1269,8 +1287,10 @@ mod tests {
 
     #[test]
     fn non_default_exposure_not_identity() {
-        let mut p = EditParams::default();
-        p.exposure = 0.5;
+        let p = EditParams {
+            exposure: 0.5,
+            ..Default::default()
+        };
         assert!(!p.is_identity());
     }
 

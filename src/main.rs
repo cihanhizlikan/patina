@@ -97,6 +97,7 @@ enum Msg {
         path: PathBuf,
         image: DecodedImage,
         fit: view::Fitted,
+        stamp: Option<FileStamp>,
     },
     Deleted {
         path: PathBuf,
@@ -107,6 +108,15 @@ enum Msg {
         meta: ImageMetadata,
     },
     DirectoryChanged,
+}
+
+/// Which version of a file a decode read: its modified time and length.
+type FileStamp = (std::time::SystemTime, u64);
+
+/// `path`'s stamp now; `None` if it cannot be read, which never matches.
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
 }
 
 #[derive(Default)]
@@ -340,7 +350,8 @@ struct App {
     /// Last navigation or mouse move over the canvas: the HUD shows from it.
     hud_since: Option<Instant>,
     toast: hud::Toast,
-    preload_cache: HashMap<PathBuf, (DecodedImage, view::Fitted)>,
+    /// The neighbours' decodes, each with the stamp of the file it read.
+    preload_cache: HashMap<PathBuf, (DecodedImage, view::Fitted, Option<FileStamp>)>,
     /// The current image reduced for Fit off the UI thread, with the
     /// image_gen it was made for.
     fitted: Option<(u64, view::Fitted)>,
@@ -508,11 +519,15 @@ impl App {
     // ── Image loading ─────────────────────────────────────────────────────────
 
     fn open_image(&mut self, path: PathBuf, mode: OpenMode, ctx: &egui::Context) {
-        // Serve from preload cache if available — no disk I/O.
-        if let Some((cached, fit)) = self.preload_cache.remove(&path) {
-            self.apply_image(path, cached, Some(fit), mode, ctx);
-            ctx.request_repaint();
-            return;
+        // Serve from the preload cache — no decode — if the file is still
+        // the one decoded: another program may have written it since.
+        if let Some((cached, fit, stamp)) = self.preload_cache.remove(&path) {
+            if stamp.is_some() && stamp == file_stamp(&path) {
+                self.apply_image(path, cached, Some(fit), mode, ctx);
+                ctx.request_repaint();
+                return;
+            }
+            log!("[load] {} changed since its preload", path.display());
         }
         // Deduplicate concurrent loads of the same path.
         if self.loading_path.as_deref() == Some(&path) {
@@ -667,8 +682,9 @@ impl App {
     fn preload_neighbours(&mut self, ctx: &egui::Context) {
         let neighbours = self.neighbours();
         let canvas = ctx.screen_rect().size();
-        self.preload_cache
-            .retain(|p, (_, fit)| neighbours.iter().flatten().any(|n| n == p) && fit.suits(canvas));
+        self.preload_cache.retain(|p, (_, fit, _)| {
+            neighbours.iter().flatten().any(|n| n == p) && fit.suits(canvas)
+        });
         for p in neighbours.into_iter().flatten() {
             if self.preload_cache.contains_key(&p) || self.loading_path.as_ref() == Some(&p) {
                 continue;
@@ -677,12 +693,16 @@ impl App {
             let canvas = ctx.screen_rect().size();
             let ctx = ctx.clone();
             std::thread::spawn(move || {
+                // Taken before the read, so a write during the decode makes
+                // the stamp, not the pixels, the stale one.
+                let stamp = file_stamp(&p);
                 if let LoadOutcome::Ok(img) = load_image(&p) {
                     let fit = fit_of(&img, canvas);
                     let _ = tx.send(Msg::Preloaded {
                         path: p,
                         image: img,
                         fit,
+                        stamp,
                     });
                     ctx.request_repaint();
                 }
@@ -783,9 +803,14 @@ impl App {
                     self.show_bad_file(path, reason, mode, ctx);
                 }
                 // A decode that lands after the user has moved on is dropped.
-                Msg::Preloaded { path, image, fit } => {
+                Msg::Preloaded {
+                    path,
+                    image,
+                    fit,
+                    stamp,
+                } => {
                     if self.neighbours().contains(&Some(path.clone())) {
-                        self.preload_cache.insert(path, (image, fit));
+                        self.preload_cache.insert(path, (image, fit, stamp));
                     }
                 }
                 Msg::Deleted { path, result } => {
@@ -2328,6 +2353,26 @@ fn draw_help_modal(ctx: &egui::Context, in_editor: bool, show: &mut bool) {
                     .color(TEXT_2)
                     .size(11.0),
             );
+            // A release build has no console: the log file is where a
+            // problem's reason is, so the help says where it is.
+            if let Some(path) = logging::path() {
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("Log: {}", path.display()))
+                            .color(TEXT_3)
+                            .size(11.0),
+                    );
+                    let show = egui::RichText::new("Show in folder")
+                        .color(ACCENT)
+                        .size(11.0);
+                    if ui.link(show).clicked() {
+                        if let Err(e) = logging::reveal(path) {
+                            log!("[log] could not show {}: {e}", path.display());
+                        }
+                    }
+                });
+            }
         });
 
     if ctx.input_mut(|i| {
@@ -2338,16 +2383,8 @@ fn draw_help_modal(ctx: &egui::Context, in_editor: bool, show: &mut bool) {
     }
 }
 
-// ── GPU texture upload ────────────────────────────────────────────────────────
+// ── Stars and guide overlays ──────────────────────────────────────────────────
 
-/// Upload RGBA pixels to a wgpu texture registered with egui.
-///
-/// Reuses the existing texture when dimensions match (animated frames / live edits).
-/// Creates and registers a new texture when dimensions change.
-/// The `TextureId` is stable until dimensions change — egui never reads the pixels.
-// ── Guide overlays ────────────────────────────────────────────────────────────
-
-/// Draw composition guides (rule of thirds or golden ratio) over the image rect.
 /// Draw a 5-pointed star centred at `centre` with outer radius `r_out` and inner `r_in`.
 fn draw_star(p: &egui::Painter, centre: egui::Pos2, r_out: f32, r_in: f32, color: egui::Color32) {
     use std::f32::consts::PI;
@@ -2363,6 +2400,7 @@ fn draw_star(p: &egui::Painter, centre: egui::Pos2, r_out: f32, r_in: f32, color
     p.add(egui::Shape::convex_polygon(pts, color, egui::Stroke::NONE));
 }
 
+/// Draw composition guides (rule of thirds or golden ratio) over the image rect.
 fn draw_guides(ui: &egui::Ui, r: egui::Rect, guides: Guides) {
     const LINE_COLOR: egui::Color32 = ui::tok::GUIDE;
     const STROKE: egui::Stroke = egui::Stroke {
@@ -4417,7 +4455,7 @@ mod keyboard_tests {
         pump_until(&mut app, &ctx, |app| {
             app.preload_cache
                 .get(&b)
-                .is_some_and(|(_, f)| f.suits(egui::vec2(1000.0, 700.0)))
+                .is_some_and(|(_, f, _)| f.suits(egui::vec2(1000.0, 700.0)))
         });
     }
 
@@ -4455,6 +4493,40 @@ mod keyboard_tests {
             on_disk(&c),
             "c shows what it holds on disk"
         );
+    }
+
+    /// Another program writes over a preloaded neighbour: the arrow shows
+    /// what the file now holds, not the decode made before the write.
+    #[test]
+    fn a_neighbour_changed_by_another_program_is_not_served_stale() {
+        let dir = TempDir::new("preload-external");
+        let a = dir.jpeg("a.jpg");
+        let b = dir.jpeg("b.jpg");
+        let (mut app, ctx) = app_on(&a);
+        app.preload_neighbours(&ctx);
+        pump_until(&mut app, &ctx, |app| app.preload_cache.contains_key(&b));
+        let cached = app.preload_cache[&b].0.frames[0].pixels.clone();
+
+        // Another program: a different picture, a different size.
+        image::RgbImage::from_pixel(8, 8, image::Rgb([20, 200, 90]))
+            .save(&b)
+            .unwrap();
+        let LoadOutcome::Ok(fresh) = load_image(&b) else {
+            panic!("b did not load");
+        };
+        assert_ne!(fresh.frames[0].pixels, cached);
+
+        frame(
+            &mut app,
+            &ctx,
+            vec![press(Key::ArrowRight, Modifiers::NONE)],
+        );
+        pump_until(&mut app, &ctx, |app| {
+            app.current_path.as_ref() == Some(&b) && app.loading_path.is_none()
+        });
+        let shown = app.current_image.as_ref().unwrap();
+        assert_eq!((shown.width, shown.height), (8, 8));
+        assert_eq!(shown.frames[0].pixels, fresh.frames[0].pixels);
     }
 
     /// A file that will not decode shows as a card, not a modal, and the
