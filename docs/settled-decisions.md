@@ -33,9 +33,11 @@ phone photo (stored landscape with Orientation 6) opened sideways.
 camera's embedded preview stored as the sensor lay, so it now applies the RAW's own Orientation tag
 (`raw_metadata`), and shows the preview as stored when that cannot be read. The first window is sized by
 `loader::shown_dimensions`, which reads the tag from the header, so a portrait photo no longer opens in a
-landscape window. **Not checked against a real RAW file**: none was at hand, so `oriented` is tested on known
-pixels, and that the preview is unturned is read from rawler's decoders (CR2, NEF: the IFD0 strip, as stored).
-RAW and JPEG XL still open the first window at the default size, as `image` cannot read their headers.
+landscape window. **Checked on a real RAW** in the release build: a Canon EOS 40D CR2 from raw.pixls.us
+(`_MG_0153.CR2`, Orientation 1), and copies with only that IFD0 byte set to 6 and to 8. The original shows
+landscape as before; 6 shows it turned clockwise and 8 counter-clockwise, 1288×1936 in the log. RAW and JPEG XL
+still open the first window at the default size, as `image` cannot read their headers: the portrait CR2 opened
+in a landscape window, then sat pillarboxed in it.
 
 ## A JPEG rotation is saved as its EXIF orientation, not re-encoded (2026-11-01)
 A save whose only edits are rotate and flip changes the Orientation tag and nothing else (`src/orientation.rs`).
