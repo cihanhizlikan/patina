@@ -57,7 +57,8 @@ tiles. The viewer keeps its zero-chrome canvas. The editor rail is reorganised a
     created when neither exists; see settled-decisions.md.
 11. ~~**Orientation everywhere.**~~ Done — RAW previews are turned by the RAW's Orientation tag, and the first
     window is sized as the photo is shown; see settled-decisions.md. Checked on a real CR2 in both directions.
-12. **Icon in the executable** — `build.rs` with `winres`, which is already a build-dependency.
+12. ~~**Icon in the executable.**~~ Done — `build.rs` embeds `patina.ico` and a version block, and the window
+    icon is set from the same file; see settled-decisions.md.
 13. **Sort order like Explorer** — needs a safe crate or a reasoned `unsafe` exception.
 14. **WebP quality** — the encoder is lossless only; lossy needs a crate or the option goes.
 15. **Metadata a save still loses** — embedded XMP, RAW/JPEG XL sources, a TIFF's ICC; GPS in the Web preset.

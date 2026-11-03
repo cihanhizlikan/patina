@@ -3060,14 +3060,27 @@ fn is_jpeg_path(path: &Path) -> bool {
     )
 }
 
+/// The window's icon (title bar, taskbar, Alt+Tab), from the same
+/// `patina.ico` build.rs embeds in the exe. `image` decodes the largest
+/// entry, 256×256. winit sets it on the window itself, which the exe's
+/// resource does not reach.
 fn load_icon() -> egui::IconData {
-    // To embed the window icon, place a 256×256 RGBA PNG at src/assets/icon.png
-    // and replace this with:
-    //   let bytes = include_bytes!("assets/icon.png");
-    //   let img   = image::load_from_memory(bytes).unwrap().into_rgba8();
-    //   let (w, h) = img.dimensions();
-    //   egui::IconData { rgba: img.into_raw(), width: w, height: h }
-    egui::IconData::default()
+    const ICO: &[u8] = include_bytes!("../patina.ico");
+    match image::load_from_memory_with_format(ICO, image::ImageFormat::Ico) {
+        Ok(img) => {
+            let img = img.into_rgba8();
+            let (width, height) = img.dimensions();
+            egui::IconData {
+                rgba: img.into_raw(),
+                width,
+                height,
+            }
+        }
+        Err(e) => {
+            log!("[icon] patina.ico did not decode: {e}");
+            egui::IconData::default()
+        }
+    }
 }
 
 /// The first frame reduced for Fit on `canvas`, made on the decoding thread
@@ -4112,6 +4125,15 @@ mod keyboard_tests {
 
         assert!(!old.exists() && new.exists());
         assert_eq!(app.current_path.as_ref(), Some(&new));
+    }
+
+    /// The window icon is Patina's, at its largest size, not winit's blank.
+    #[test]
+    fn the_window_icon_is_patinas() {
+        let icon = load_icon();
+        assert_eq!((icon.width, icon.height), (256, 256));
+        assert_eq!(icon.rgba.len(), 256 * 256 * 4);
+        assert!(icon.rgba.chunks(4).any(|p| p[3] > 0), "not transparent");
     }
 
     /// The rating set on `photo.jpg` is still there once it is `photo.png`.

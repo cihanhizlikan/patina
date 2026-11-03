@@ -70,7 +70,8 @@ disallowed_methods = "deny"
 unsafe_code = "forbid"
 
 [build-dependencies]
-# winres kept for Windows icon embedding — platform-specific but harmless on others
+# build.rs embeds patina.ico and the version block in Patina.exe. Unmaintained
+# since 2020 but build-time only; see docs/settled-decisions.md for why it stays.
 winres = "0.1"
 
 [profile.release]

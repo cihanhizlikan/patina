@@ -285,6 +285,17 @@ also still reduced at upload. `a_large_image_arrives_reduced_for_fit`, `a_resize
 Not taken: a parallel Lanczos or the `fast_image_resize` crate, which would shorten every reduction but leave
 it on the UI thread, and add a dependency.
 
+## The icon is in the executable and on the window (2026-11-03)
+There was no `build.rs`, so `Patina.exe` carried no icon (Explorer, pins and the installer's shortcuts showed the
+generic one), and `load_icon` returned winit's blank, so the title bar and Alt+Tab had none either — the old note
+that the window icon was set was wrong. Now `build.rs` compiles `patina.ico` and a version block
+(ProductName and FileDescription "Patina", which Task Manager shows) into the exe with `winres`, and `load_icon`
+decodes the same file's 256×256 entry. Checked in the built exe: all four entries (16, 32, 48, 256) are present
+byte for byte, and `VersionInfo` reads Patina 0.1.0. **`winres` stays**, though unmaintained since 2020: it was
+already a build-dependency, it adds nothing to the binary, and its job is writing an `.rc` and calling the SDK's
+`rc.exe`; the maintained fork `winresource` is a new crate for the same code. What would move this: a Windows SDK
+it cannot find. A failed resource compile fails the build, rather than shipping an exe without its icon.
+
 ## Paths are used as given — no `canonicalize` (inherited)
 `std::fs::canonicalize` on Windows returns a verbatim `\\?\C:\…` path, which breaks paths handed over by
 archivers. **Build-enforced**: both `canonicalize` functions are banned in `clippy.toml`, and
@@ -323,10 +334,6 @@ sharing. Recommendation: the Web preset removes GPS (one IFD pointer in IFD0), t
 ## WebP "quality" is ignored
 The `image` crate's WebP encoder is lossless only, so the *Archive (WebP 90%)* preset writes lossless WebP and the
 quality field does nothing (the code says so; the UI does not).
-
-## The icon is not embedded in the executable
-`winres` is a build-dependency and the module doc mentions `build.rs`, but there is no `build.rs`. Explorer and the
-installer show the default icon; only the window icon (`load_icon`) is set.
 
 
 ## Sort order differs from Explorer
