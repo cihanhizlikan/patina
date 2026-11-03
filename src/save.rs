@@ -49,6 +49,21 @@ impl Metadata {
     }
 }
 
+impl Metadata {
+    /// The same metadata without the location. An EXIF block whose GPS part
+    /// cannot be taken out is dropped whole: a save that was asked to remove
+    /// the location must not carry it.
+    pub fn without_location(mut self) -> Self {
+        if let Some(exif) = &mut self.exif {
+            if let Err(e) = crate::orientation::without_location(exif) {
+                log!("[save] EXIF dropped, its location could not be removed: {e}");
+                self.exif = None;
+            }
+        }
+        self
+    }
+}
+
 fn decoder(path: &Path) -> image::ImageResult<impl ImageDecoder> {
     image::ImageReader::open(path)?
         .with_guessed_format()?
@@ -306,6 +321,72 @@ mod tests {
             "shown as before the save, not turned again"
         );
         assert!(!dir.0.join("phone.jpg.tmp").exists());
+    }
+
+    /// The latitude 41° 0' 40.00" as three little-endian RATIONALs: a byte
+    /// pattern no other part of a test file holds.
+    const LATITUDE: [u8; 24] = [
+        41, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0xA0, 0x0F, 0, 0, 100, 0, 0, 0,
+    ];
+
+    /// Little-endian EXIF with Make "Canon" and a GPS IFD holding
+    /// GPSLatitudeRef "N" and GPSLatitude.
+    fn located_exif() -> Vec<u8> {
+        let mut t = vec![b'I', b'I', 42, 0, 8, 0, 0, 0];
+        t.extend_from_slice(&[3, 0]); // IFD0 at 8: three entries, ends at 50
+        t.extend_from_slice(&[0x12, 0x01, 3, 0, 1, 0, 0, 0, 1, 0, 0, 0]); // Orientation = 1
+        t.extend_from_slice(&[0x0F, 0x01, 2, 0, 6, 0, 0, 0, 50, 0, 0, 0]); // Make, 6 bytes at 50
+        t.extend_from_slice(&[0x25, 0x88, 4, 0, 1, 0, 0, 0, 56, 0, 0, 0]); // GPS IFD at 56
+        t.extend_from_slice(&[0, 0, 0, 0]); // no IFD1
+        t.extend_from_slice(b"Canon\0"); // 50..56
+        t.extend_from_slice(&[2, 0]); // GPS IFD: two entries, ends at 86
+        t.extend_from_slice(&[0x01, 0x00, 2, 0, 2, 0, 0, 0, b'N', 0, 0, 0]); // GPSLatitudeRef
+        t.extend_from_slice(&[0x02, 0x00, 5, 0, 3, 0, 0, 0, 86, 0, 0, 0]); // GPSLatitude at 86
+        t.extend_from_slice(&[0, 0, 0, 0]);
+        t.extend_from_slice(&LATITUDE); // 86..110
+        t
+    }
+
+    /// The Remove location option (set by the Web preset) takes the GPS
+    /// out of the saved file — the coordinates' bytes too — and keeps the
+    /// rest of the EXIF; without it the location is kept.
+    #[test]
+    fn remove_location_takes_the_gps_out_of_the_file() {
+        let dir = TempDir::new("gps");
+        let src = dir.0.join("located.jpg");
+        let mut out = Vec::new();
+        let mut enc = JpegEncoder::new_with_quality(&mut out, 90);
+        enc.set_exif_metadata(located_exif()).unwrap();
+        enc.write_image(&[100; 8 * 8 * 3], 8, 8, ExtendedColorType::Rgb8)
+            .unwrap();
+        std::fs::write(&src, out).unwrap();
+        let img = loaded(&src);
+
+        let kept = dir.0.join("kept.jpg");
+        to_path(&img, 0, &kept, 90, None, &Metadata::read(&src)).unwrap();
+        let exif = exif_of(&kept).unwrap();
+        assert!(exif
+            .get_field(::exif::Tag::GPSLatitude, ::exif::In::PRIMARY)
+            .is_some());
+
+        let shared = dir.0.join("shared.jpg");
+        let meta = Metadata::read(&src).without_location();
+        to_path(&img, 0, &shared, 90, None, &meta).unwrap();
+        let exif = exif_of(&shared).unwrap();
+        for tag in [::exif::Tag::GPSLatitude, ::exif::Tag::GPSLatitudeRef] {
+            assert!(exif.get_field(tag, ::exif::In::PRIMARY).is_none(), "{tag}");
+        }
+        assert_eq!(
+            exif.get_field(::exif::Tag::Make, ::exif::In::PRIMARY)
+                .map(|f| f.display_value().to_string()),
+            Some("\"Canon\"".to_string()),
+            "the rest of the EXIF stays"
+        );
+        let bytes = std::fs::read(&shared).unwrap();
+        assert!(
+            !bytes.windows(LATITUDE.len()).any(|w| w == LATITUDE),
+            "the coordinates are not left in the file unreferenced"
+        );
     }
 
     /// A WebP save keeps every pixel, whatever the quality field says: the

@@ -210,6 +210,8 @@ struct SaveAsModal {
     quality: u8,
     /// When set, the exported image is resized to fit within this square.
     max_dim: Option<u32>,
+    /// Save without the EXIF location (GPS). The Web preset sets it.
+    remove_location: bool,
     preset: ExportPreset,
     /// An existing file the dialog has warned about. Saving to exactly this
     /// path replaces it; any change to the folder, name or format makes a
@@ -236,7 +238,7 @@ enum ExportPreset {
 impl ExportPreset {
     const ALL: &'static [(Self, &'static str)] = &[
         (Self::Custom, "Custom"),
-        (Self::Web, "Web (JPEG 85%, ≤2048px)"),
+        (Self::Web, "Web (JPEG 85%, ≤2048px, no location)"),
         (Self::Print, "Print (PNG lossless)"),
         (Self::Archive, "Archive (WebP lossless)"),
     ];
@@ -244,19 +246,23 @@ impl ExportPreset {
     fn apply(self, modal: &mut SaveAsModal) {
         match self {
             Self::Custom => {}
+            // A photo shared on the web should not say where it was taken.
             Self::Web => {
                 modal.format = OutputFormat::Jpeg;
                 modal.quality = 85;
                 modal.max_dim = Some(2048);
+                modal.remove_location = true;
             }
             Self::Print => {
                 modal.format = OutputFormat::Png;
                 modal.quality = 100;
                 modal.max_dim = None;
+                modal.remove_location = false;
             }
             Self::Archive => {
                 modal.format = OutputFormat::WebP;
                 modal.max_dim = None;
+                modal.remove_location = false;
             }
         }
     }
@@ -1269,20 +1275,30 @@ impl App {
             directory,
             quality: 95,
             max_dim: None,
+            remove_location: false,
             preset: ExportPreset::Custom,
             replace: None,
         }
     }
 
-    fn commit_save_as(&mut self, dest: PathBuf, quality: u8, max_dim: Option<u32>) {
+    fn commit_save_as(
+        &mut self,
+        dest: PathBuf,
+        quality: u8,
+        max_dim: Option<u32>,
+        remove_location: bool,
+    ) {
         let Some(display) = self.pixels_to_save() else {
             return;
         };
-        let meta = self
+        let mut meta = self
             .current_path
             .as_deref()
             .map(save::Metadata::read)
             .unwrap_or_default();
+        if remove_location {
+            meta = meta.without_location();
+        }
         if let Err(e) = save::to_path(&display, self.frame_index, &dest, quality, max_dim, &meta) {
             self.pending_error = Some(format!("Save failed:\n{e}"));
             return;
@@ -2542,6 +2558,16 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
                     }
                 }
             });
+            ui.add_space(8.0);
+
+            // Location: GPS out of the saved EXIF, for sharing.
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Location").color(TEXT_2).size(12.0));
+                ui.add_space(8.0);
+                if ui.checkbox(&mut modal.remove_location, "Remove").changed() {
+                    modal.preset = ExportPreset::Custom;
+                }
+            });
             ui.add_space(16.0);
 
             ui.label(
@@ -2621,9 +2647,9 @@ fn confirm_save_as(app: &mut App) {
         m.replace = Some(dest);
         return;
     }
-    let (q, d) = (m.quality, m.max_dim);
+    let (q, d, no_gps) = (m.quality, m.max_dim, m.remove_location);
     app.save_as_modal = None;
-    app.commit_save_as(dest, q, d);
+    app.commit_save_as(dest, q, d, no_gps);
 }
 
 // ── Main modal ────────────────────────────────────────────────────────────────
@@ -4129,6 +4155,24 @@ mod keyboard_tests {
         assert_eq!(app.current_path.as_ref(), Some(&new));
     }
 
+    /// The Web preset removes the location; the others keep it, and a new
+    /// dialog starts by keeping it.
+    #[test]
+    fn the_web_preset_removes_the_location() {
+        let dir = TempDir::new("preset-gps");
+        let path = dir.jpeg("a.jpg");
+        let (app, _ctx) = app_on(&path);
+        let mut modal = app.default_save_as_modal();
+        assert!(!modal.remove_location);
+        ExportPreset::Web.apply(&mut modal);
+        assert!(modal.remove_location);
+        for keeps in [ExportPreset::Print, ExportPreset::Archive] {
+            ExportPreset::Web.apply(&mut modal);
+            keeps.apply(&mut modal);
+            assert!(!modal.remove_location, "{keeps:?}");
+        }
+    }
+
     /// The window icon is Patina's, at its largest size, not winit's blank.
     #[test]
     fn the_window_icon_is_patinas() {
@@ -4391,7 +4435,7 @@ mod keyboard_tests {
         let before = app.preload_cache[&c].0.frames[0].pixels.clone();
 
         edit(&mut app, &ctx);
-        app.commit_save_as(c.clone(), 95, None);
+        app.commit_save_as(c.clone(), 95, None, false);
         let on_disk = |p: &Path| match load_image(p) {
             LoadOutcome::Ok(img) => img.frames[0].pixels.clone(),
             _ => panic!("{} did not load", p.display()),

@@ -135,6 +135,74 @@ pub fn for_upright_pixels(exif: &mut [u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Take the location out of an EXIF block (its TIFF bytes): IFD0's pointer
+/// to the GPS IFD is removed, and the GPS IFD and every value it points to
+/// are zeroed, so the coordinates are gone from the bytes, not only from
+/// what a reader follows. Other offsets in the block hold. A block without a
+/// GPS IFD is left as it is. An error means it could not be done; the caller
+/// then drops the EXIF rather than risk the location.
+pub fn without_location(exif: &mut [u8]) -> anyhow::Result<()> {
+    const GPS_IFD: u16 = 0x8825;
+    let t = Tiff::parse(exif)?;
+    let count = t.u16(t.ifd0)? as usize;
+    let entry = |k: usize| t.ifd0 + 2 + 12 * k;
+    let mut found = None;
+    for k in 0..count {
+        if t.u16(entry(k))? == GPS_IFD {
+            found = Some(k);
+        }
+    }
+    let Some(k) = found else {
+        return Ok(());
+    };
+
+    let gps = t.u32(entry(k) + 8)? as usize;
+    let n = t.u16(gps)? as usize;
+    // The GPS IFD itself, then each value it keeps out of line.
+    let mut erase = Vec::with_capacity(n + 1);
+    erase.push(gps..gps + 2 + 12 * n + 4);
+    for j in 0..n {
+        let e = gps + 2 + 12 * j;
+        let size = type_size(t.u16(e + 2)?)? * t.u32(e + 4)? as usize;
+        if size > 4 {
+            let at = t.u32(e + 8)? as usize;
+            erase.push(at..at + size);
+        }
+    }
+    // Everything the edit needs, taken while `t` reads the bytes.
+    let (ifd0, at_k, after_k) = (t.ifd0, entry(k), entry(k + 1));
+    let ifd0_end = entry(count) + 4; // past the next-IFD offset
+    let fewer = t.encode_u16(count as u16 - 1);
+    if erase
+        .iter()
+        .chain([&(ifd0..ifd0_end)])
+        .any(|r| r.end > exif.len())
+    {
+        bail!("the GPS block of the EXIF is truncated");
+    }
+
+    for r in erase {
+        exif[r].fill(0);
+    }
+    // Close the gap the pointer leaves: later entries and the next-IFD
+    // offset move up one record, the count drops by one.
+    exif.copy_within(after_k..ifd0_end, at_k);
+    exif[ifd0_end - 12..ifd0_end].fill(0);
+    exif[ifd0..ifd0 + 2].copy_from_slice(&fewer);
+    Ok(())
+}
+
+/// Bytes per value of a TIFF field type.
+fn type_size(field_type: u16) -> anyhow::Result<usize> {
+    Ok(match field_type {
+        1 | 2 | 6 | 7 => 1,   // BYTE, ASCII, SBYTE, UNDEFINED
+        3 | 8 => 2,           // SHORT, SSHORT
+        4 | 9 | 11 | 13 => 4, // LONG, SLONG, FLOAT, IFD
+        5 | 10 | 12 => 8,     // RATIONAL, SRATIONAL, DOUBLE
+        other => bail!("unknown TIFF field type {other} in the GPS block"),
+    })
+}
+
 // ── JPEG segments ─────────────────────────────────────────────────────────────
 
 /// Where the EXIF APP1's TIFF block sits in the file.

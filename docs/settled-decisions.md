@@ -304,6 +304,19 @@ also still reduced at upload. `a_large_image_arrives_reduced_for_fit`, `a_resize
 Not taken: a parallel Lanczos or the `fast_image_resize` crate, which would shorten every reduction but leave
 it on the UI thread, and add a dependency.
 
+## A web export leaves the location behind (2026-11-03)
+Every save carried the EXIF GPS, the Web preset included; Lightroom and most export tools offer to strip it for
+sharing. Save As now has a **Location: Remove** checkbox, which the Web preset ticks (*Web (JPEG 85%, ≤2048px, no
+location)*) and Print and Archive untick; a new dialog keeps the location. A checkbox rather than the preset
+alone, because touching any field turns the preset into Custom. `orientation::without_location` removes IFD0's
+pointer to the GPS IFD and **zeroes the GPS IFD and every value it points to**: dropping the pointer alone would
+leave the coordinates in the file for anything that scans bytes. Offsets elsewhere in the block hold, so the rest of
+the EXIF is untouched. A GPS block it cannot parse makes the save drop the EXIF whole rather than carry the location.
+`remove_location_takes_the_gps_out_of_the_file` saves a file with a GPS latitude both ways and checks the saved
+bytes: with the option no GPS field and no trace of the latitude's bytes, Make still there; without it, the GPS
+kept. `the_web_preset_removes_the_location`. Not covered: a location written in embedded XMP (`exif:GPSLatitude`),
+which no save carries yet.
+
 ## WebP is written lossless, and says so (2026-11-03)
 The `image` crate's WebP encoder is lossless only, but the dialog offered *Archive (WebP 90%)* and a quality slider
 for WebP that did nothing. Measured on a 1936×1288 photo: PNG 2,406,805 B; lossless WebP 1,524,000 B (63% of PNG,
@@ -358,8 +371,5 @@ Left over from carrying EXIF and ICC across (above), each measured or read in `i
 - **Stale EXIF fields** — PixelXDimension/PixelYDimension keep the source's size after a resize or a 90° turn.
   Readers use the frame's real size, so this is cosmetic.
 
-## GPS in a web export
-The *Web* preset keeps the location like every other save. Lightroom and most export tools offer to strip it for
-sharing. Recommendation: the Web preset removes GPS (one IFD pointer in IFD0), the others keep it.
 
 
