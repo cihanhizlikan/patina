@@ -102,8 +102,9 @@ pub fn to_path(
             h,
             ExtendedColorType::Rgba8,
         )?,
-        // The `image` crate's WebP encoder is lossless-only; the quality field
-        // has no effect for WebP output. Lossy WebP requires the `webp` crate.
+        // Lossless by decision, and so `quality` does not apply: lossy would
+        // need libwebp (the `webp` crate, 416 KB of C) and a hand-written
+        // container to keep EXIF and ICC. See docs/settled-decisions.md.
         Some("webp") => encode(
             WebPEncoder::new_lossless(&mut out),
             meta,
@@ -305,6 +306,31 @@ mod tests {
             "shown as before the save, not turned again"
         );
         assert!(!dir.0.join("phone.jpg.tmp").exists());
+    }
+
+    /// A WebP save keeps every pixel, whatever the quality field says: the
+    /// file decodes to exactly the image that was saved.
+    #[test]
+    fn webp_is_written_lossless() {
+        let dir = TempDir::new("webp-lossless");
+        let src = dir.0.join("noise.png");
+        let mut seed = 0x2545_f491_u32;
+        let noise = image::RgbaImage::from_fn(64, 48, |_, _| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let [r, g, b, _] = seed.to_le_bytes();
+            image::Rgba([r, g, b, 255])
+        });
+        noise.save(&src).unwrap();
+        let img = loaded(&src);
+
+        let dest = dir.0.join("noise.webp");
+        to_path(&img, 0, &dest, 10, None, &Metadata::read(&src)).unwrap();
+
+        let back = image::open(&dest).unwrap().to_rgba8();
+        assert_eq!(back.dimensions(), (64, 48));
+        assert!(back == noise, "every pixel survived quality 10");
     }
 
     /// Save As to each format that can hold metadata.

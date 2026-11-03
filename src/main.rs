@@ -167,7 +167,7 @@ impl OutputFormat {
         match self {
             Self::Png => "PNG",
             Self::Jpeg => "JPEG",
-            Self::WebP => "WebP",
+            Self::WebP => "WebP lossless",
             Self::Tiff => "TIFF",
             Self::Bmp => "BMP",
         }
@@ -206,7 +206,7 @@ struct SaveAsModal {
     stem: String,
     format: OutputFormat,
     directory: PathBuf,
-    /// JPEG/WebP encode quality in [1, 100].
+    /// JPEG encode quality in [1, 100]. WebP is written lossless.
     quality: u8,
     /// When set, the exported image is resized to fit within this square.
     max_dim: Option<u32>,
@@ -228,7 +228,8 @@ enum ExportPreset {
     Web,
     /// PNG lossless, no resize — maximum fidelity for print reproduction.
     Print,
-    /// WebP at quality 90, no resize — compact archival format.
+    /// Lossless WebP, no resize: every pixel kept, about a third smaller than
+    /// PNG. An archive is not where data is thrown away.
     Archive,
 }
 
@@ -237,7 +238,7 @@ impl ExportPreset {
         (Self::Custom, "Custom"),
         (Self::Web, "Web (JPEG 85%, ≤2048px)"),
         (Self::Print, "Print (PNG lossless)"),
-        (Self::Archive, "Archive (WebP 90%)"),
+        (Self::Archive, "Archive (WebP lossless)"),
     ];
 
     fn apply(self, modal: &mut SaveAsModal) {
@@ -255,7 +256,6 @@ impl ExportPreset {
             }
             Self::Archive => {
                 modal.format = OutputFormat::WebP;
-                modal.quality = 90;
                 modal.max_dim = None;
             }
         }
@@ -2495,8 +2495,9 @@ fn draw_save_as_modal(ctx: &egui::Context, app: &mut App) {
             });
             ui.add_space(8.0);
 
-            // Quality slider (JPEG / WebP only)
-            if matches!(modal.format, OutputFormat::Jpeg | OutputFormat::WebP) {
+            // Quality slider: JPEG only. WebP is written lossless, so a
+            // slider there would promise a trade it does not make.
+            if modal.format == OutputFormat::Jpeg {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Quality").color(TEXT_2).size(12.0));
                     ui.add_space(8.0);

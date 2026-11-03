@@ -61,7 +61,8 @@ tiles. The viewer keeps its zero-chrome canvas. The editor rail is reorganised a
     icon is set from the same file; see settled-decisions.md.
 13. ~~**Sort order like Explorer.**~~ Done — `StrCmpLogicalW` in `explorer_order.rs`, the one module allowed
     `unsafe`, chosen over ICU4X after measuring both; see settled-decisions.md.
-14. **WebP quality** — the encoder is lossless only; lossy needs a crate or the option goes.
+14. ~~**WebP quality.**~~ Done — the option went: WebP is written lossless and the dialog says so; lossy
+    (libwebp, +416 KB of C) measured and not taken; see settled-decisions.md.
 15. **Metadata a save still loses** — embedded XMP, RAW/JPEG XL sources, a TIFF's ICC; GPS in the Web preset.
 
 ## Considered and dropped

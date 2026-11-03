@@ -304,6 +304,18 @@ also still reduced at upload. `a_large_image_arrives_reduced_for_fit`, `a_resize
 Not taken: a parallel Lanczos or the `fast_image_resize` crate, which would shorten every reduction but leave
 it on the UI thread, and add a dependency.
 
+## WebP is written lossless, and says so (2026-11-03)
+The `image` crate's WebP encoder is lossless only, but the dialog offered *Archive (WebP 90%)* and a quality slider
+for WebP that did nothing. Measured on a 1936×1288 photo: PNG 2,406,805 B; lossless WebP 1,524,000 B (63% of PNG,
+34 ms); JPEG 90 395,711 B; lossy WebP 90 through libwebp (the `webp` crate) 173,312 B in 320 ms. Lossy would add
+416 KB of compiled C to the exe, and the crate writes no EXIF or ICC, so keeping them would mean a hand-built
+VP8X container on a path that writes the user's files. **Not taken.** WebP stays lossless and the UI now says so:
+the format reads *WebP lossless*, the preset *Archive (WebP lossless)*, and the quality slider shows for JPEG only.
+An archive should not lose data on each save; small files for the web are the Web (JPEG) preset's job.
+`webp_is_written_lossless` saves noise at quality 10 and decodes it back pixel for pixel. What would move this:
+a real need for small WebP output (a site that takes only WebP), and then libwebp with the container written and
+tested on disk.
+
 ## The icon is in the executable and on the window (2026-11-03)
 There was no `build.rs`, so `Patina.exe` carried no icon (Explorer, pins and the installer's shortcuts showed the
 generic one), and `load_icon` returned winit's blank, so the title bar and Alt+Tab had none either — the old note
@@ -349,9 +361,5 @@ Left over from carrying EXIF and ICC across (above), each measured or read in `i
 ## GPS in a web export
 The *Web* preset keeps the location like every other save. Lightroom and most export tools offer to strip it for
 sharing. Recommendation: the Web preset removes GPS (one IFD pointer in IFD0), the others keep it.
-
-## WebP "quality" is ignored
-The `image` crate's WebP encoder is lossless only, so the *Archive (WebP 90%)* preset writes lossless WebP and the
-quality field does nothing (the code says so; the UI does not).
 
 
