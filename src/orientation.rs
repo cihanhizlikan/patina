@@ -192,6 +192,48 @@ pub fn without_location(exif: &mut [u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Make the Exif IFD's PixelXDimension and PixelYDimension say `w`×`h`,
+/// in place. A SHORT too small for the value becomes a LONG; both fit the
+/// entry's 4 value bytes, so nothing moves. Absent fields stay absent.
+pub fn set_pixel_size(exif: &mut [u8], w: u32, h: u32) -> anyhow::Result<()> {
+    const EXIF_IFD: u16 = 0x8769;
+    let t = Tiff::parse(exif)?;
+    let mut sub = None;
+    for k in 0..t.u16(t.ifd0)? as usize {
+        let e = t.ifd0 + 2 + 12 * k;
+        if t.u16(e)? == EXIF_IFD {
+            sub = Some(t.u32(e + 8)? as usize);
+        }
+    }
+    let Some(sub) = sub else {
+        return Ok(());
+    };
+    let n = t.u16(sub)? as usize;
+    let mut writes = Vec::new();
+    for j in 0..n {
+        let e = sub + 2 + 12 * j;
+        let value = match t.u16(e)? {
+            0xA002 => w,
+            0xA003 => h,
+            _ => continue,
+        };
+        if t.u32(e + 4)? != 1 {
+            bail!("PixelDimension holds more than one value");
+        }
+        let (kind, bytes) = match (t.u16(e + 2)?, u16::try_from(value)) {
+            (3, Ok(short)) => (3, [t.encode_u16(short), [0, 0]].concat()),
+            (3 | 4, _) => (4, t.encode_u32(value).to_vec()),
+            (other, _) => bail!("PixelDimension has field type {other}"),
+        };
+        writes.push((e, t.encode_u16(kind), bytes));
+    }
+    for (e, kind, bytes) in writes {
+        exif[e + 2..e + 4].copy_from_slice(&kind);
+        exif[e + 8..e + 12].copy_from_slice(&bytes);
+    }
+    Ok(())
+}
+
 /// Bytes per value of a TIFF field type.
 fn type_size(field_type: u16) -> anyhow::Result<usize> {
     Ok(match field_type {

@@ -8,10 +8,11 @@
 //!
 //! What each format holds, as `image` 0.25 writes it:
 //!   JPEG, PNG, WebP — ICC and EXIF.   TIFF — ICC.   BMP, GIF, ICO — neither.
-//! XMP embedded in the file is not carried: `image` has no XMP encoder.
-//! RAW and JPEG XL sources yield no metadata: `image` does not open them. A
-//! TIFF source yields no profile: `image` 0.25.10 writes a TIFF's ICC tag
-//! but reads none back, not even its own (measured in the tests).
+//! Where `image` cannot read the source, this module does: a RAW's EXIF is
+//! rebuilt with kamadak-exif, a JPEG XL's comes from its Exif box, and a
+//! TIFF's profile from its tag 34675. The saved EXIF's pixel size is the
+//! saved image's. XMP embedded in the file is not carried: `image` has no
+//! XMP encoder.
 
 use std::io::Cursor;
 use std::path::Path;
@@ -33,11 +34,26 @@ impl Metadata {
     /// The ICC profile and EXIF of the image file at `path`. A save in place
     /// reads this before it overwrites the file.
     pub fn read(path: &Path) -> Self {
-        let Ok(mut dec) = decoder(path) else {
-            return Self::default();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default();
+        // `image` opens neither RAW nor JPEG XL; RAW files (TIFF-based) are
+        // read with kamadak-exif, JPEG XL from its Exif box. Their pixels are
+        // rendered to sRGB by the decoders, so no profile is carried.
+        let (icc, exif) = if crate::loader::is_raw_ext(&ext) {
+            (None, rebuilt_exif(path))
+        } else if ext == "jxl" {
+            (None, std::fs::read(path).ok().and_then(|b| jxl_exif(&b)))
+        } else {
+            let Ok(mut dec) = decoder(path) else {
+                return Self::default();
+            };
+            let icc = dec.icc_profile().ok().flatten().or_else(|| tiff_icc(path));
+            (icc, dec.exif_metadata().ok().flatten())
         };
-        let icc = dec.icc_profile().ok().flatten();
-        let exif = dec.exif_metadata().ok().flatten().and_then(|mut exif| {
+        let exif = exif.and_then(|mut exif| {
             // An EXIF block that cannot be set upright is dropped, not
             // copied: an Orientation left in it would turn the image twice.
             crate::orientation::for_upright_pixels(&mut exif)
@@ -61,6 +77,95 @@ impl Metadata {
             }
         }
         self
+    }
+}
+
+/// A RAW file's EXIF, as a fresh block a JPEG, PNG or WebP can carry: the
+/// main image's standard tags (camera, lens, date, exposure, GPS) kept; the
+/// maker note, whose offsets point into the RAW, private tags and the RAW's
+/// own image structure (size, strips, compression, its other IFDs) left out.
+/// `None` for a RAW kamadak-exif cannot read (CR3, RAF, …).
+fn rebuilt_exif(path: &Path) -> Option<Vec<u8>> {
+    use ::exif::{In, Tag};
+    let file = std::fs::File::open(path).ok()?;
+    let exif = ::exif::Reader::new()
+        .read_from_container(&mut std::io::BufReader::new(file))
+        .inspect_err(|e| log!("[save] no EXIF read from {}: {e}", path.display()))
+        .ok()?;
+    let structure = |Tag(_, n): Tag| matches!(n, 0x0100..=0x0106 | 0x0115 | 0x0116 | 0x011C);
+    let mut writer = ::exif::experimental::Writer::new();
+    for f in exif.fields() {
+        let Tag(ctx, _) = f.tag;
+        let tiff_structure = ctx == ::exif::Context::Tiff && structure(f.tag);
+        if f.ifd_num == In::PRIMARY
+            && f.tag.description().is_some()
+            && f.tag != Tag::MakerNote
+            && !tiff_structure
+        {
+            writer.push_field(f);
+        }
+    }
+    let mut out = Cursor::new(Vec::new());
+    writer
+        .write(&mut out, exif.little_endian())
+        .inspect_err(|e| log!("[save] EXIF of {} not rebuilt: {e}", path.display()))
+        .ok()?;
+    Some(out.into_inner())
+}
+
+/// The EXIF of a JPEG XL file: the TIFF bytes in its `Exif` box, after the
+/// box's 4-byte offset to the header. A bare codestream has no boxes, and a
+/// Brotli-compressed `brob` box is not read.
+fn jxl_exif(file: &[u8]) -> Option<Vec<u8>> {
+    const SIGNATURE: &[u8] = b"\0\0\0\x0CJXL \r\n\x87\n";
+    if !file.starts_with(SIGNATURE) {
+        return None;
+    }
+    let mut at = 0usize;
+    while at + 8 <= file.len() {
+        let size = u32::from_be_bytes(file[at..at + 4].try_into().ok()?) as u64;
+        let kind = &file[at + 4..at + 8];
+        let (header, size) = match size {
+            0 => (8, (file.len() - at) as u64),
+            1 => (
+                16,
+                u64::from_be_bytes(file.get(at + 8..at + 16)?.try_into().ok()?),
+            ),
+            n => (8, n),
+        };
+        let end = at.checked_add(usize::try_from(size).ok()?)?;
+        let body = file.get(at + header..end)?;
+        if kind == b"Exif" {
+            let offset = u32::from_be_bytes(body.get(..4)?.try_into().ok()?) as usize;
+            return Some(body.get(4 + offset..)?.to_vec());
+        }
+        at = end;
+    }
+    None
+}
+
+/// A TIFF's ICC profile (tag 34675), which `image` 0.25.10 does not read
+/// back. Read only for a file with a TIFF header, so other formats cost no
+/// second read.
+fn tiff_icc(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut head = [0u8; 4];
+    file.read_exact(&mut head).ok()?;
+    if head != *b"II*\0" && head != *b"MM\0*" {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let exif = ::exif::Reader::new()
+        .read_from_container(&mut std::io::BufReader::new(file))
+        .ok()?;
+    let icc = exif.get_field(
+        ::exif::Tag(::exif::Context::Tiff, 0x8773),
+        ::exif::In::PRIMARY,
+    )?;
+    match &icc.value {
+        ::exif::Value::Undefined(bytes, _) | ::exif::Value::Byte(bytes) => Some(bytes.clone()),
+        _ => None,
     }
 }
 
@@ -159,7 +264,13 @@ fn encode(
         let _ = enc.set_icc_profile(icc.clone());
     }
     if let Some(exif) = &meta.exif {
-        let _ = enc.set_exif_metadata(exif.clone());
+        // PixelXDimension/PixelYDimension say the saved size, not the
+        // source's (a resize, a 90° turn, a RAW's sensor size).
+        let mut exif = exif.clone();
+        if let Err(e) = crate::orientation::set_pixel_size(&mut exif, w, h) {
+            log!("[save] EXIF pixel size left as it was: {e}");
+        }
+        let _ = enc.set_exif_metadata(exif);
     }
     enc.write_image(pixels, w, h, colour)
 }
@@ -387,6 +498,146 @@ mod tests {
             !bytes.windows(LATITUDE.len()).any(|w| w == LATITUDE),
             "the coordinates are not left in the file unreferenced"
         );
+    }
+
+    fn field(tag: ::exif::Tag, value: ::exif::Value) -> ::exif::Field {
+        ::exif::Field {
+            tag,
+            ifd_num: ::exif::In::PRIMARY,
+            value,
+        }
+    }
+
+    /// A small PNG to have pixels to save; 16×8.
+    fn sixteen_by_eight(dir: &Path) -> DecodedImage {
+        let path = dir.join("pixels.png");
+        image::RgbaImage::from_pixel(16, 8, image::Rgba([9, 9, 9, 255]))
+            .save(&path)
+            .unwrap();
+        loaded(&path)
+    }
+
+    /// A RAW source's EXIF reaches the saved file: camera and exposure kept,
+    /// Orientation set to 1 (the decoder turned the pixels), the maker note
+    /// and the RAW's own image structure left out, and the pixel size made
+    /// the saved one instead of the sensor's.
+    #[test]
+    fn a_raw_source_s_exif_is_carried_into_a_jpeg() {
+        use ::exif::{In, Rational, Tag, Value};
+        let dir = TempDir::new("raw-exif");
+        let fields = [
+            field(Tag::Make, Value::Ascii(vec![b"Canon".to_vec()])),
+            field(Tag::Model, Value::Ascii(vec![b"Canon EOS 40D".to_vec()])),
+            field(Tag::Orientation, Value::Short(vec![6])),
+            field(Tag::ImageWidth, Value::Long(vec![1936])),
+            field(
+                Tag::ExposureTime,
+                Value::Rational(vec![Rational { num: 13, denom: 10 }]),
+            ),
+            field(
+                Tag::MakerNote,
+                Value::Undefined(b"canon private".to_vec(), 0),
+            ),
+            field(Tag::PixelXDimension, Value::Long(vec![3888])),
+            field(Tag::PixelYDimension, Value::Long(vec![2592])),
+        ];
+        let mut w = ::exif::experimental::Writer::new();
+        fields.iter().for_each(|f| w.push_field(f));
+        let mut tiff = Cursor::new(Vec::new());
+        w.write(&mut tiff, true).unwrap();
+        let raw = dir.0.join("shot.dng");
+        std::fs::write(&raw, tiff.into_inner()).unwrap();
+
+        let dest = dir.0.join("shot.jpg");
+        to_path(
+            &sixteen_by_eight(&dir.0),
+            0,
+            &dest,
+            90,
+            None,
+            &Metadata::read(&raw),
+        )
+        .unwrap();
+
+        let exif = exif_of(&dest).expect("the JPEG has EXIF");
+        let shown = |tag| {
+            exif.get_field(tag, In::PRIMARY)
+                .map(|f| f.display_value().to_string())
+        };
+        assert_eq!(shown(Tag::Model).as_deref(), Some("\"Canon EOS 40D\""));
+        assert_eq!(shown(Tag::ExposureTime).as_deref(), Some("1.3"));
+        assert_eq!(
+            exif.get_field(Tag::Orientation, In::PRIMARY)
+                .and_then(|f| f.value.get_uint(0)),
+            Some(1)
+        );
+        assert_eq!(shown(Tag::MakerNote), None);
+        assert_eq!(shown(Tag::ImageWidth), None);
+        let px = |tag| {
+            exif.get_field(tag, In::PRIMARY)
+                .and_then(|f| f.value.get_uint(0))
+        };
+        assert_eq!(
+            (px(Tag::PixelXDimension), px(Tag::PixelYDimension)),
+            (Some(16), Some(8))
+        );
+    }
+
+    /// A JPEG XL container's Exif box reaches the saved file.
+    #[test]
+    fn a_jpeg_xl_source_s_exif_is_carried() {
+        let dir = TempDir::new("jxl-exif");
+        let boxed = |kind: &[u8], body: &[u8]| {
+            [&((body.len() + 8) as u32).to_be_bytes(), kind, body].concat()
+        };
+        let exif_box = [&[0u8, 0, 0, 0][..], &located_exif()].concat();
+        let jxl = [
+            &b"\0\0\0\x0CJXL \r\n\x87\n"[..],
+            &boxed(b"ftyp", b"jxl \0\0\0\0jxl "),
+            &boxed(b"Exif", &exif_box),
+            &boxed(b"jxlc", &[0xFF, 0x0A]),
+        ]
+        .concat();
+        let src = dir.0.join("shot.jxl");
+        std::fs::write(&src, jxl).unwrap();
+
+        let dest = dir.0.join("shot.png");
+        to_path(
+            &sixteen_by_eight(&dir.0),
+            0,
+            &dest,
+            90,
+            None,
+            &Metadata::read(&src),
+        )
+        .unwrap();
+
+        let exif = decoder(&dest).unwrap().exif_metadata().unwrap().unwrap();
+        let exif = ::exif::Reader::new().read_raw(exif).unwrap();
+        assert!(exif
+            .get_field(::exif::Tag::Make, ::exif::In::PRIMARY)
+            .is_some());
+    }
+
+    /// A TIFF source's ICC profile, which `image` does not read back, is
+    /// read and carried into a PNG.
+    #[test]
+    fn a_tiff_source_s_profile_is_carried() {
+        use image::codecs::tiff::TiffEncoder;
+        let dir = TempDir::new("tiff-icc");
+        let src = dir.0.join("scan.tif");
+        let mut out = Vec::new();
+        let mut enc = TiffEncoder::new(Cursor::new(&mut out));
+        enc.set_icc_profile(ICC.to_vec()).unwrap();
+        enc.write_image(&[50; 16 * 8 * 4], 16, 8, ExtendedColorType::Rgba8)
+            .unwrap();
+        std::fs::write(&src, out).unwrap();
+
+        let meta = Metadata::read(&src);
+        assert_eq!(meta.icc.as_deref(), Some(ICC));
+        let dest = dir.0.join("scan.png");
+        to_path(&loaded(&src), 0, &dest, 90, None, &meta).unwrap();
+        assert_eq!(icc_of(&dest).as_deref(), Some(ICC));
     }
 
     /// A WebP save keeps every pixel, whatever the quality field says: the

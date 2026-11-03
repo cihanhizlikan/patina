@@ -304,6 +304,22 @@ also still reduced at upload. `a_large_image_arrives_reduced_for_fit`, `a_resize
 Not taken: a parallel Lanczos or the `fast_image_resize` crate, which would shorten every reduction but leave
 it on the UI thread, and add a dependency.
 
+## Metadata from sources `image` cannot read, and a true pixel size (2026-11-03)
+Three losses of a re-encoded save, each closed in `save.rs` without a new dependency:
+**A RAW source's EXIF.** `image` does not open RAW files, so an edited RAW saved as JPEG lost camera, lens, date
+and exposure. `rebuilt_exif` reads the RAW with kamadak-exif (already a dependency) and writes a fresh block with
+its `experimental::Writer`: the main image's standard tags and the GPS kept; the maker note (its offsets point into
+the RAW), private tags and the RAW's image structure (size, strips, compression, its other IFDs) left out. A fresh
+block, not the RAW's bytes, because those bytes are the RAW's own TIFF structure. Checked on the raw.pixls.us
+Canon EOS 40D CR2 saved to JPEG: Make, Model, dates, exposure 1.3 s, f/8, ISO 100, 38 mm and Interop read back.
+RAWs kamadak-exif cannot read (CR3, RAF) still give none. **A JPEG XL source's EXIF**, from its container's `Exif`
+box (a bare codestream has none; a Brotli `brob` box is not read). Neither carries a profile: both decoders render
+to sRGB. **A TIFF source's profile**, tag 34675, read with kamadak-exif; `image` writes that tag but reads none.
+**The pixel size**: `orientation::set_pixel_size` makes PixelXDimension/PixelYDimension the saved size, in place
+(a SHORT too small becomes a LONG). The CR2 said 3888×2592, its sensor, over a 1936×1288 image; it now says
+1936×1288. Tests: `a_raw_source_s_exif_is_carried_into_a_jpeg`, `a_jpeg_xl_source_s_exif_is_carried`,
+`a_tiff_source_s_profile_is_carried`. The `experimental` writer is the risk taken: kamadak-exif may change it.
+
 ## A web export leaves the location behind (2026-11-03)
 Every save carried the EXIF GPS, the Web preset included; Lightroom and most export tools offer to strip it for
 sharing. Save As now has a **Location: Remove** checkbox, which the Web preset ticks (*Web (JPEG 85%, ≤2048px, no
@@ -366,10 +382,6 @@ Found while writing the baseline (2026-11-01). Each is a candidate until measure
 ## What a re-encoded save still loses
 Left over from carrying EXIF and ICC across (above), each measured or read in `image` 0.25.10:
 - **XMP embedded in the file** (Lightroom, darktable, keywords) — `image` has no XMP encoder.
-- **RAW and JPEG XL sources** give no metadata — `image` does not open them; `rawler` and `jxl-oxide` would.
-- **A TIFF source's ICC profile** — `image` writes the tag but reads none back, not even its own.
-- **Stale EXIF fields** — PixelXDimension/PixelYDimension keep the source's size after a resize or a 90° turn.
-  Readers use the frame's real size, so this is cosmetic.
 
 
 
