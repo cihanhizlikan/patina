@@ -52,15 +52,6 @@ impl Rotation {
             Self::R270 => Self::R180,
         }
     }
-    #[allow(dead_code)]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::R0 => "0°",
-            Self::R90 => "90°",
-            Self::R180 => "180°",
-            Self::R270 => "270°",
-        }
-    }
 }
 
 // ── Preset filters ────────────────────────────────────────────────────────────
@@ -310,10 +301,6 @@ impl UndoStack {
     pub fn current_mut(&mut self) -> &mut EditParams {
         &mut self.history[self.cursor]
     }
-    #[allow(dead_code)]
-    pub fn reset(&mut self) {
-        *self = Self::new();
-    }
 
     pub fn push(&mut self, p: EditParams) {
         self.history.truncate(self.cursor + 1);
@@ -373,29 +360,6 @@ impl EditorState {
     pub fn commit(&mut self, p: EditParams) {
         self.undo.push(p);
         self.dirty = true;
-    }
-
-    /// Recompute `display` if dirty. Call once per redraw.
-    #[allow(dead_code)]
-    pub fn sync(&mut self, original: &DecodedImage) {
-        if !self.dirty {
-            return;
-        }
-        self.dirty = false;
-        self.display = apply_edits(original, self.undo.current());
-    }
-
-    #[allow(dead_code)]
-    pub fn do_undo(&mut self, original: &DecodedImage) {
-        self.undo.undo();
-        self.dirty = true;
-        self.sync(original);
-    }
-    #[allow(dead_code)]
-    pub fn do_redo(&mut self, original: &DecodedImage) {
-        self.undo.redo();
-        self.dirty = true;
-        self.sync(original);
     }
 }
 
