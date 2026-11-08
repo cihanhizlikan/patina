@@ -3167,10 +3167,13 @@ fn clamp_to_work_area(w: u32, h: u32, ctx: &egui::Context) -> (u32, u32) {
     )
 }
 
-/// Truncate a path display string to `max_chars`, prefixing with `…`.
+/// The last `max_chars` characters of a path, after `…` when it was cut.
+/// Counted in characters, so a cut never lands inside a non-ASCII letter.
 fn truncate_path_display(s: &str, max_chars: usize) -> String {
-    if s.len() > max_chars {
-        format!("…{}", &s[s.len() - max_chars..])
+    let count = s.chars().count();
+    if count > max_chars {
+        let tail: String = s.chars().skip(count - max_chars).collect();
+        format!("…{tail}")
     } else {
         s.to_string()
     }
@@ -3418,6 +3421,24 @@ mod keyboard_tests {
     use super::*;
     use egui::{Key, Modifiers};
 
+    /// The Save As folder is cut to its last 38 characters, not bytes: a
+    /// cut inside a non-ASCII letter (`ğ` is two bytes) panicked the window.
+    #[test]
+    fn a_long_folder_is_cut_at_a_character() {
+        let tail = "b".repeat(37);
+        let folder = format!("{}ğ{tail}", "a".repeat(10));
+        assert_eq!(truncate_path_display(&folder, 38), format!("…ğ{tail}"));
+
+        let ascii = format!("C:\\{}", "x".repeat(40));
+        assert_eq!(
+            truncate_path_display(&ascii, 38),
+            format!("…{}", "x".repeat(38))
+        );
+        assert_eq!(
+            truncate_path_display("C:\\Fotoğraflar", 38),
+            "C:\\Fotoğraflar"
+        );
+    }
     /// A fresh, empty directory under the system temp dir, removed on drop.
     struct TempDir(PathBuf);
 
