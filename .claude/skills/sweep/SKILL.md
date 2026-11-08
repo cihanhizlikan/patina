@@ -259,9 +259,10 @@ zero); then the shapes no default lint catches:
   never clears).
 - **A panic on untrusted input** — `unwrap`/`expect`, slice indexing and unchecked offset arithmetic in code that
   reads a FILE (EXIF, XMP, PNG and JPEG segment walking, container boxes). Probe `clippy::unwrap_used`,
-  `clippy::indexing_slicing` and **`clippy::string_slice`** from the command line (they apply crate-wide) and read
-  only the hits in production code — a hit at or after its file's first `#[cfg(test)]` is a test's, so cut the
-  list there before reading it. **`string_slice` is the one to read first**: `&s[..n]` on a `str` panics when `n`
+  `clippy::indexing_slicing` and **`clippy::string_slice`** from the command line (they apply crate-wide), **without
+  `--all-targets`**: the bin target alone compiles no `#[cfg(test)]` code, so every hit is production's. Never cut
+  the list by line number instead — a test module or test-only helper can sit mid-file (sweep 2026-11-08 run 2: a
+  cut at `ui.rs`'s first `#[cfg(test)]`, line 85, hid a production hit at 981). **`string_slice` is the one to read first**: `&s[..n]` on a `str` panics when `n`
   falls inside a character, and a file's text or a user's path (`fotoğraflar`) is where it does. It found the one
   real panic of sweep 2026-11-08 step 6 (exif.rs's date), which the other three buried in 554 hits; an index that
   comes from `find` of an ASCII pattern is on a boundary and is declined as read.

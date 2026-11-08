@@ -91,7 +91,7 @@ batch export (features, not UI refinements — revisit after 6–8 exist); slide
   harness (`painted_text`, `help_at`) would move with it; it is a package with a real-app check, not a bump.
   *What would falsify it*: a newer eframe that still pulls the same unmaintained crates. *Origin*: sweep
   2026-11-08 step 3, not yet committed to build.
-- **149 compatible updates are pending, and a blanket `cargo update` adds 13 crates.** *Where*: Cargo.lock;
+- **148 compatible updates are pending (recounted 2026-11-08, run 2), and a blanket `cargo update` adds 13 crates.** *Where*: Cargo.lock;
   `cargo update --dry-run` adds getrandom 0.4, hashbrown 0.17, libm, miniz_oxide 0.9, num-complex, pulp,
   pulp-wasm-simd-flag, raw-cpuid, reborrow, syn 2.0.119 and 3.0.9, utf_types and zlib-rs. *Why it is not the
   obvious thing*: every new crate needs its justification (CLAUDE.md), and pulp/raw-cpuid look like a SIMD
