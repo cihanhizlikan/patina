@@ -393,6 +393,15 @@ already a build-dependency, it adds nothing to the binary, and its job is writin
 `rc.exe`; the maintained fork `winresource` is a new crate for the same code. What would move this: a Windows SDK
 it cannot find. A failed resource compile fails the build, rather than shipping an exe without its icon.
 
+## Advisories outside the shipped target are declined, by name (2026-11-08)
+Patina ships one build: the 64-bit Windows installer (`patina_setup.iss`). `cargo deny check advisories` on
+2026-11-08 reports four vulnerabilities whose affected code that build never runs, and they stay: **jxl-grid
+0.5.3** RUSTSEC-2026-0151 (an integer overflow on 32-bit targets only); **webbrowser 0.8.15** RUSTSEC-2026-0257
+(Unix `BROWSER` argument injection; on Windows the crate calls `ShellExecuteW`); **quick-xml 0.39.4**
+RUSTSEC-2026-0194 and -0195 (reached only through `wayland-scanner`, a Linux build-time proc-macro reading the
+Wayland protocol files it ships with — `cargo tree -i quick-xml -e normal` on Windows prints nothing). The fixes
+for the last two need eframe newer than 0.27, which is a roadmap package, not a lockfile change. What would move
+this: a Linux or 32-bit release, or a fix reachable by `cargo update -p` within semver.
 ## Paths are used as given — no `canonicalize` (inherited)
 `std::fs::canonicalize` on Windows returns a verbatim `\\?\C:\…` path, which breaks paths handed over by
 archivers. **Build-enforced**: both `canonicalize` functions are banned in `clippy.toml`, and
