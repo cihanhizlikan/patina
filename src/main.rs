@@ -719,13 +719,20 @@ impl App {
 
         let tx = self.msg_tx.clone();
         let ctx = ctx.clone();
-        if let Ok(mut w) = new_debouncer(DIR_WATCH_DEBOUNCE, move |_| {
+        // Without a watcher the folder is still browsable; it only stops
+        // noticing changes made elsewhere, which the log then says.
+        match new_debouncer(DIR_WATCH_DEBOUNCE, move |_| {
             let _ = tx.send(Msg::DirectoryChanged);
             ctx.request_repaint();
         }) {
-            use notify_debouncer_mini::notify::RecursiveMode;
-            let _ = w.watcher().watch(&dir, RecursiveMode::NonRecursive);
-            self.dir_watcher = Some(w);
+            Ok(mut w) => {
+                use notify_debouncer_mini::notify::RecursiveMode;
+                if let Err(e) = w.watcher().watch(&dir, RecursiveMode::NonRecursive) {
+                    log!("[watch] {} is not watched: {e}", dir.display());
+                }
+                self.dir_watcher = Some(w);
+            }
+            Err(e) => log!("[watch] no directory watcher: {e}"),
         }
     }
 

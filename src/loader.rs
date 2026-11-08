@@ -130,7 +130,27 @@ pub fn is_raw_ext(ext: &str) -> bool {
 /// Fast path: trust the declared extension. On failure: sniff the file header.
 /// Returns `WrongExtension` when the file decodes under a different format,
 /// or `Unsupported` when no known format matches.
+///
+/// A decoder that panics on a malformed file is reported as `Unsupported`,
+/// like any other file that does not decode: the panic hook has logged it,
+/// and the thread that asked still gets an answer.
 pub fn load_image(path: &Path) -> LoadOutcome {
+    guarded(|| decode_file(path))
+}
+
+/// `decode`'s answer, or `Unsupported` naming the panic if it panicked.
+fn guarded(decode: impl FnOnce() -> LoadOutcome) -> LoadOutcome {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode)).unwrap_or_else(|panic| {
+        let what = panic
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        LoadOutcome::Unsupported(format!("the decoder failed on this file: {what}"))
+    })
+}
+
+fn decode_file(path: &Path) -> LoadOutcome {
     let ext = file_ext(path);
 
     // RAW formats bypass the magic-byte check — they have no reliable single
@@ -466,6 +486,23 @@ mod tests {
     const RED: [u8; 4] = [255, 0, 0, 255];
     const BLUE: [u8; 4] = [0, 0, 255, 255];
 
+    /// A decoder that panics is an unsupported file, with the panic's
+    /// message, not a dead decode thread the window waits on forever.
+    #[test]
+    fn a_decoder_panic_is_reported_as_unsupported() {
+        let outcome = guarded(|| panic!("index out of bounds"));
+        let LoadOutcome::Unsupported(reason) = outcome else {
+            panic!("a panic must come back as Unsupported");
+        };
+        assert!(reason.contains("index out of bounds"), "{reason}");
+
+        let len = 3;
+        let outcome = guarded(|| panic!("length {len}"));
+        assert!(matches!(outcome, LoadOutcome::Unsupported(r) if r.contains("length 3")));
+
+        let outcome = guarded(|| LoadOutcome::Unsupported("as it was".into()));
+        assert!(matches!(outcome, LoadOutcome::Unsupported(r) if r == "as it was"));
+    }
     /// A RAW's preview turned by its Orientation tag: 2×1 red|blue,
     /// Orientation 6, is shown 1×2 with red on top.
     #[test]
