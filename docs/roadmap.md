@@ -107,3 +107,10 @@ batch export (features, not UI refinements — revisit after 6–8 exist); slide
   helpers; `read_metadata_inner` is a flat priority list of tags, long but linear. Whether to cut them, or to allow
   each at its site with the reason, is a policy over sites. *What would falsify it*: a bug traced to one of them
   that a split would have isolated. *Origin*: sweep 2026-11-08 step 7, not yet committed to build.
+- **The README has no screenshot and no licence.** *Where*: README.md, *License* section (a placeholder comment);
+  no `LICENSE` file, no `license` key in Cargo.toml; the screenshot link to a nonexistent `docs/screenshot.png` was
+  removed by sweep 2026-11-08 step 9. *Why it is not the obvious thing*: the licence is a legal choice only the
+  maintainer makes, and a screenshot needs a real photo the maintainer is willing to publish. The README's
+  *Releases* link (`../../releases`) was not checked: `gh` is not on this machine. *What would falsify it*: a
+  licence chosen elsewhere (a GitHub repository setting) that the README should just name. *Origin*: sweep
+  2026-11-08 step 9, not yet committed to build.
