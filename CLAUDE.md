@@ -29,7 +29,10 @@ loader, navigator and path rules.
 - **[docs/roadmap.md](docs/roadmap.md) is the work queue, in order.** Update it in the commit that lands an item.
 - **Never work on `main`.** Branch off its tip (`feature/<slug>`, `fix/<slug>`, `chore/<slug>`); merging and
   pushing are the maintainer's.
-- **Verify with the `/verify` skill before calling anything green.** Report its numbers, not an impression.
+- **A package runs through three skills**: `/wp-start` before the first edit, `/wp-verify` before calling anything
+  green (report its numbers, not an impression), `/wp-finish` to commit, rebuild and merge. `/sweep` is the
+  unattended audit, started by the maintainer only. Their repository facts are keys in
+  [.claude/project-profile.md](.claude/project-profile.md), ported with the skills from Yalbuz (2026-11-08).
 - **After every commit, rebuild from clean**: `cargo clean`, then `cargo build --release --locked`, and report the
   exit code and `target\release\Patina.exe` size. The exe on disk is then always a fresh build of the latest
   commit, never a leftover. (`Cargo.toml` and `Cargo.lock` are source, not build output; they are never deleted.)
@@ -59,5 +62,10 @@ Carried over from the maintainer's other projects:
   cost in binary size and startup time.
 - **Correct a misused technical term** in one clause, then answer the actual question.
 - **Hand over decisions, not inventories.** Triage a lint loop before reporting it; lead with what survives.
-- **Commit bodies are the archive**: what changed, why it was not the obvious thing, and the evidence. Search them
-  with `git log --grep=<term>`.
+- **Commit bodies are the archive**: what changed, why it was not the obvious thing, and the evidence, in about
+  1,500 bytes measured before committing (`/wp-finish`). Search them with `git log --grep=<term>`.
+- **Check the instrument before believing it.** A confident negative is the result to distrust first: read what a
+  search or probe matched, and whether its shape is the case in question, before concluding from how many.
+- **A refusal is not a failure.** When a permission check refuses an action, never re-issue it in another form —
+  narrower, reworded, split, through another tool; that takes the decision the refusal made. Say what was refused
+  and leave it. Retrying an error nobody chose (a locked file, a timeout) is not that.

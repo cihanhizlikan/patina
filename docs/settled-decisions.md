@@ -161,7 +161,7 @@ What would move this: a maintained crate exposing `StrCmpLogicalW` (or `CompareS
 
 ## Default rustfmt, gated (2026-11-01)
 Decided by the maintainer before the UI rework, which rewrites most of `ui.rs` and `main.rs`: one formatting-only
-commit first, so later diffs show only real changes. The hand-aligned columns went with it. `/verify` fails on a
+commit first, so later diffs show only real changes. The hand-aligned columns went with it. `/wp-verify` fails on a
 `cargo fmt --check` diff. The formatting commit is listed in `.git-blame-ignore-revs`
 (`git config blame.ignoreRevsFile .git-blame-ignore-revs`). Same choice as Devoid Viewer.
 
