@@ -82,3 +82,19 @@ batch export (features, not UI refinements — revisit after 6–8 exist); slide
   (`fsio.rs`) is a structure decision, and the delete path (`trash`) might belong there too. *What would
   falsify it*: a third caller set that shows the two are not one layer (e.g. a write that must not be atomic).
   *Origin*: sweep 2026-11-08 step 1, not yet committed to build.
+- **eframe/egui 0.27 is behind, and it is where the unmaintained crates come from.** *Where*: Cargo.toml
+  `eframe`, `egui`, `egui_extras` = 0.27. `cargo deny check advisories` names paste (via accesskit_windows),
+  ttf-parser (ab_glyph/epaint) and webbrowser in the Windows tree, and derivative, instant, zbus_names, zvariant
+  and quick-xml in its Linux tree; `cargo tree -i <crate> --target all` traces each to eframe 0.27. *Why it is not
+  the obvious thing*: each egui minor breaks API (`Context`, `ViewportBuilder`, `Painter`, the
+  `egui::Frame`/`Margin` types the HUD and rail draw with), and the GPU texture path in view.rs and every render
+  harness (`painted_text`, `help_at`) would move with it; it is a package with a real-app check, not a bump.
+  *What would falsify it*: a newer eframe that still pulls the same unmaintained crates. *Origin*: sweep
+  2026-11-08 step 3, not yet committed to build.
+- **149 compatible updates are pending, and a blanket `cargo update` adds 13 crates.** *Where*: Cargo.lock;
+  `cargo update --dry-run` adds getrandom 0.4, hashbrown 0.17, libm, miniz_oxide 0.9, num-complex, pulp,
+  pulp-wasm-simd-flag, raw-cpuid, reborrow, syn 2.0.119 and 3.0.9, utf_types and zlib-rs. *Why it is not the
+  obvious thing*: every new crate needs its justification (CLAUDE.md), and pulp/raw-cpuid look like a SIMD
+  backend change in a decoder; the sweep took only the four advisory and yanked fixes. *What would falsify it*:
+  the 13 additions all being build-time or non-Windows. *Origin*: sweep 2026-11-08 step 3, not yet committed to
+  build.
