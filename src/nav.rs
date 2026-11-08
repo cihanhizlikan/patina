@@ -326,19 +326,20 @@ mod tests {
     }
 
     #[test]
-    fn remove_last_file_does_not_panic() {
+    fn removing_the_only_file_leaves_none_current() {
         let mut n = nav(&["/d/a.jpg"], "/d/a.jpg");
         n.remove(Path::new("/d/a.jpg"));
-        let _ = n.current(); // must not panic
+        assert_eq!(n.len(), 0);
+        assert!(n.current().is_none());
     }
 
     #[test]
     fn remove_adjusts_index_to_valid_range() {
         let mut n = nav(&["/d/a.jpg", "/d/b.jpg", "/d/c.jpg"], "/d/c.jpg");
         n.remove(Path::new("/d/c.jpg"));
-        // index must still point within the (now shorter) list
-        if !n.files.is_empty() {
-            assert!(n.index < n.files.len());
-        }
+        // index must still point within the (now shorter) list, at the new last file
+        assert_eq!(n.len(), 2);
+        assert!(n.index < n.files.len());
+        assert_eq!(n.current(), Some(&PathBuf::from("/d/b.jpg")));
     }
 }
