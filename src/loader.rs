@@ -32,11 +32,6 @@ pub struct DecodedImage {
 }
 
 impl DecodedImage {
-    #[allow(dead_code)] // useful API — will be needed for animation-aware export
-    pub fn is_animated(&self) -> bool {
-        self.frames.len() > 1
-    }
-
     /// Return the frame at `idx`. Always valid — callers use modulo arithmetic.
     pub fn frame(&self, idx: usize) -> &Frame {
         debug_assert!(

@@ -19,7 +19,6 @@ pub struct DirNavigator {
     current_dir: Option<PathBuf>,
 }
 
-#[allow(dead_code)] // Public navigator API — not all methods used by current callers
 impl DirNavigator {
     /// Call whenever a new path is opened.
     /// Rebuilds the sibling list only when the directory actually changes.
@@ -68,7 +67,6 @@ impl DirNavigator {
 
     /// Remove a path (e.g. after deletion) and adjust the index so the next
     /// logical sibling becomes current.
-    #[allow(dead_code)]
     pub fn remove(&mut self, path: &Path) {
         if let Some(pos) = self.files.iter().position(|p| p.as_path() == path) {
             self.files.remove(pos);
@@ -90,12 +88,6 @@ impl DirNavigator {
         self.files.get(self.index)
     }
 
-    /// Number of image files in the current sibling list.
-    #[allow(clippy::len_without_is_empty)]
-    pub fn len(&self) -> usize {
-        self.files.len()
-    }
-
     /// `path`'s place in the list, from 1, and the list's length. Usually
     /// `path` is the current file and this costs nothing; while a navigation
     /// is still loading it is not, and the list is searched.
@@ -106,11 +98,6 @@ impl DirNavigator {
             self.files.iter().position(|p| p == path)?
         };
         Some((i + 1, self.files.len()))
-    }
-
-    /// Whether `path` is present in the current sibling list.
-    pub fn contains(&self, path: &Path) -> bool {
-        self.files.iter().any(|f| f.as_path() == path)
     }
 
     /// Rebuild the sibling list in place after an OS-reported directory change.
@@ -195,10 +182,9 @@ enum Direction {
 // ── Test helpers (compiled only under `cargo test`) ───────────────────────────
 
 #[cfg(test)]
-#[allow(dead_code)] // Public navigator API — not all methods used by current callers
 impl DirNavigator {
     /// Build a navigator with a pre-loaded file list — no disk access.
-    /// Used by both inline unit tests and the tests/ integration suite.
+    /// For the unit tests below.
     pub fn from_list(files: Vec<std::path::PathBuf>, current: &std::path::Path) -> Self {
         let index = files
             .iter()
@@ -322,14 +308,14 @@ mod tests {
     fn remove_shrinks_list() {
         let mut n = nav(&["/d/a.jpg", "/d/b.jpg", "/d/c.jpg"], "/d/a.jpg");
         n.remove(Path::new("/d/b.jpg"));
-        assert_eq!(n.len(), 2);
+        assert_eq!(n.files.len(), 2);
     }
 
     #[test]
     fn removing_the_only_file_leaves_none_current() {
         let mut n = nav(&["/d/a.jpg"], "/d/a.jpg");
         n.remove(Path::new("/d/a.jpg"));
-        assert_eq!(n.len(), 0);
+        assert_eq!(n.files.len(), 0);
         assert!(n.current().is_none());
     }
 
@@ -338,7 +324,7 @@ mod tests {
         let mut n = nav(&["/d/a.jpg", "/d/b.jpg", "/d/c.jpg"], "/d/c.jpg");
         n.remove(Path::new("/d/c.jpg"));
         // index must still point within the (now shorter) list, at the new last file
-        assert_eq!(n.len(), 2);
+        assert_eq!(n.files.len(), 2);
         assert!(n.index < n.files.len());
         assert_eq!(n.current(), Some(&PathBuf::from("/d/b.jpg")));
     }
