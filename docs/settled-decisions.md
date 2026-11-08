@@ -15,10 +15,13 @@ texture is full resolution with a box-filtered mip chain (2026-11-02, below). Th
 with live adjustments, not a minimal viewer. **The reason for wgpu over egui's glow backend was not recorded** —
 maintainer to fill in.
 
-## Cross-platform, with no `#[cfg(windows)]` code
+## Cross-platform; per-OS code only where no crate does the job
 The Win32 hooks of the winit build were removed; eframe handles the window on every platform and `rfd` provides the
 file dialogs (`src/main.rs` module doc). The installer (`patina_setup.iss`) is Windows-only. Keep platform
-behaviour inside cross-platform crates rather than adding per-OS branches.
+behaviour inside cross-platform crates rather than adding per-OS branches. Two exceptions exist,
+each a `#[cfg(windows)]`/`#[cfg(not(windows))]` pair: `explorer_order` (`StrCmpLogicalW`, its own entry below)
+and `logging::reveal_command` (`explorer /select` against `xdg-open`). The heading used to say *no*
+`#[cfg(windows)]` code, which stopped being true with the first (corrected by sweep 2026-11-08).
 
 ## Editing is non-destructive and recomputed from the original
 `original` is immutable; `display` is recomputed from scratch on every parameter change. `EditParams` is a plain

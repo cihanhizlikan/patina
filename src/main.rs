@@ -10,8 +10,9 @@
 //!
 //! Cross-platform notes
 //! ====================
-//! - No #[cfg(windows)] blocks. Win32 hooks from the old winit build are removed;
-//!   eframe handles window management natively on each platform.
+//! - Win32 hooks from the old winit build are removed; eframe handles window
+//!   management natively on each platform. Per-OS code is confined to two
+//!   pairs: xplorer_order (Explorer's sort) and logging::reveal_command.
 //! - rfd (file dialogs) is cross-platform.
 //! - build.rs / winres embeds the Windows icon but is a no-op on Linux/macOS.
 
@@ -586,7 +587,7 @@ impl App {
         }
 
         // The first image resizes the window, so its neighbours are prepared
-        // once the size has settled (efit_after_resize), not for this one.
+        // once the size has settled (refit_after_resize), not for this one.
         if mode == OpenMode::FirstImage {
             self.canvas_moved_at = Some(Instant::now());
         } else {
