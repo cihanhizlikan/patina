@@ -37,6 +37,7 @@ loader, navigator and path rules.
 - **After every commit, rebuild from clean**: `cargo clean`, then `cargo build --release --locked`, and report the
   exit code and `target\release\Patina.exe` size. The exe on disk is then always a fresh build of the latest
   commit, never a leftover. (`Cargo.toml` and `Cargo.lock` are source, not build output; they are never deleted.)
+  A `/sweep` rebuilds once, after its last merge, rather than per step (its *Finishing* says why).
 - **Patina writes to the user's files** — saves in place, sidecars, renames, deletes. A change on any of those paths
   needs a test that shows what is on disk afterwards, not just that the call returned `Ok`.
 - **Documentation lives in this repository as Markdown**, changed in the same commit as the code it describes.

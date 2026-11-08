@@ -69,7 +69,7 @@ that every path below still resolves.
 | `audit_command` | `cargo deny check advisories` — cargo-deny 0.20.2, no `deny.toml`, so defaults; fetches the RustSec database, so it needs the network. LIVE 2026-11-08 and failing: unmaintained, unsound and vulnerable advisories in transitive dependencies |
 | `update_command` | `cargo update --dry-run` — semver-compatible updates only, nothing installed; LIVE 2026-11-08 |
 | `duplicates_command` | `cargo tree -d` — the same crate at two versions (`image` 0.24 under `rawler` beside 0.25 is known and deliberate) |
-| `clean_rebuild` | after every commit: `cargo clean`, then `cargo build --release --locked`; report the exit code and the size of `target\release\Patina.exe` |
+| `clean_rebuild` | after every commit: `cargo clean`, then `cargo build --release --locked`; report the exit code and the size of `target\release\Patina.exe`. A sweep: once, after its last merge |
 | `push_policy` | a session pushes `main` only when the maintainer's request says so |
 
 ## The surfaces people read

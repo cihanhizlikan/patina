@@ -259,8 +259,13 @@ zero); then the shapes no default lint catches:
   never clears).
 - **A panic on untrusted input** — `unwrap`/`expect`, slice indexing and unchecked offset arithmetic in code that
   reads a FILE (EXIF, XMP, PNG and JPEG segment walking, container boxes). Probe `clippy::unwrap_used`,
-  `clippy::indexing_slicing` and `clippy::arithmetic_side_effects` from the command line (they apply crate-wide)
-  and read only the hits in parsing code; elsewhere they are noise.
+  `clippy::indexing_slicing` and **`clippy::string_slice`** from the command line (they apply crate-wide) and read
+  only the hits in production code — a hit at or after its file's first `#[cfg(test)]` is a test's, so cut the
+  list there before reading it. **`string_slice` is the one to read first**: `&s[..n]` on a `str` panics when `n`
+  falls inside a character, and a file's text or a user's path (`fotoğraflar`) is where it does. It found the one
+  real panic of sweep 2026-11-08 step 6 (exif.rs's date), which the other three buried in 554 hits; an index that
+  comes from `find` of an ASCII pattern is on a boundary and is declined as read.
+  **`arithmetic_side_effects` is not probed**: on 64-bit `usize` offset sums it measured almost all noise.
 - **A write to the user's file that is not atomic**, or whose test does not read the file back (`CLAUDE.md`).
 - **The reviewer-carried rules** in `profile:reviewer_carried_rules`.
 
@@ -283,7 +288,8 @@ comment that STATES a number a tool computes is a cached derived value**: remove
 
 - **Mechanical, whole tree**: every backticked repository path must resolve. Triage each miss: **gitignored**
   (`git check-ignore -q <path>`) — expected; **deleted on purpose and named as history** — the sentence says so;
-  **relative to a folder the sentence names** — resolve it there. What is left is drift, and the fix is the path it
+  **relative to a folder the sentence names** — resolve it there; a bare module name (`view.rs`) resolves under
+  `src/` before it counts as a miss. What is left is drift, and the fix is the path it
   moved to (`git log --follow --diff-filter=R`). The count of misses is never the finding.
 - **Claims of STATE**: a sentence saying a thing "is off", "is not split yet", "about 60 lines", or stating a count.
   Read each against what decides it. **A claim decays by being OVERTAKEN, not contradicted.**
@@ -331,7 +337,10 @@ before concluding anything from HOW MANY, and a probe's SHAPE before generalisin
 re-opened by a new fact, never by an argument. Where a context document and a settled decision disagree, the
 decision is the ruling and the document is step 8's drift.
 
-**Line endings are `profile:line_endings`.**
+**Line endings are `profile:line_endings`.** A scripted edit (PowerShell `Get-Content -Raw`/`Set-Content`) keeps
+each file's OWN endings — read whether it holds CRLF before writing it back, never normalise every file to one. **A
+whole-file `git diff --stat` on a few-line change means the endings moved**: put them back before committing
+*(sweep 2026-11-08: a 9,929-line diff on main.rs, caught there)*.
 
 ---
 
@@ -345,7 +354,11 @@ no branch.**
 - **Branch `sweep-<n>-<subject>`; merge with `git merge --no-ff -m "merge: sweep <YYYY-MM-DD> step <n> — <subject>"`.**
   The merge commit is how the NEXT run finds its baseline; a fast-forward leaves no marker and makes the next
   run's scope the whole tree.
-- **`profile:clean_rebuild` after every commit** — `CLAUDE.md`'s rule, unchanged by this skill.
+- **`profile:clean_rebuild` ONCE, after the last merge of the run**, not after every step's commit — the one
+  exception to `CLAUDE.md`'s per-commit rule, adopted 2026-11-08 at the maintainer's word. Each clean release
+  build takes ~10 minutes here and nobody runs the exe mid-run; each step's `/wp-verify` still builds and tests
+  its own commit. The report gives the final build's exit code and size. A run that ends early rebuilds after its
+  last merge all the same.
 - **Corrections travel in the step's own commits**; handed-over packages are roadmap rows on the step's branch;
   anything refused on evidence goes to `profile:settled_decisions`.
 

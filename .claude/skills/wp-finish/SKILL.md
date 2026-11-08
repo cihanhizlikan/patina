@@ -56,7 +56,7 @@ written from memory or copied from an older commit**.
 
 ## 4. Rebuild from clean
 
-`profile:clean_rebuild` — every commit, so the exe on disk is a fresh build of the latest commit:
+`profile:clean_rebuild` — every commit, so the exe on disk is a fresh build of the latest commit (a `/sweep` does it once, after its last merge):
 
 ```powershell
 $env:PATH = "$HOME\.cargo\bin;$env:PATH"
