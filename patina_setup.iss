@@ -1,4 +1,4 @@
-; Patina — Inno Setup 6.7+ installer script
+; Patina — Inno Setup 7 installer script
 ; Place this file in the project root alongside Cargo.toml.
 ; Build with: iscc patina_setup.iss
 ; Output: Output\Patina_Setup.exe
@@ -15,9 +15,9 @@ AppId={#AppId}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
-AppPublisherURL=https://github.com/yourusername/patina
-AppSupportURL=https://github.com/yourusername/patina
-AppUpdatesURL=https://github.com/yourusername/patina
+AppPublisherURL=https://github.com/cihanhizlikan/patina
+AppSupportURL=https://github.com/cihanhizlikan/patina
+AppUpdatesURL=https://github.com/cihanhizlikan/patina
 
 ; Per-user by default, no UAC. User can choose "Install for all users"
 ; on the scope page which re-launches elevated and switches to per-machine.
