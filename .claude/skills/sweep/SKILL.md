@@ -306,6 +306,18 @@ comment that STATES a number a tool computes is a cached derived value**: remove
 3. **Wording** — concise and plain; cut a sentence that restates its heading and a qualifier that rules nothing out.
    `profile:wording_rules`; **search for the CONSTRUCTION a rule forbids across every string**, not the one somebody
    complained about last.
+4. **The installer** — `profile:installer_script`, the first thing a user runs. Whole tree every run, because it
+   drifts by what changes AROUND it, not in it. Derive each against what decides it:
+   - its version against `Cargo.toml`'s `version` (the exe's version block comes from there);
+   - every extension list it registers (Open With, Set as Default, the UserChoice cleanup) against
+     `profile:installer_formats_source`, and against each other;
+   - its URLs against `git remote get-url origin`;
+   - the file its `[Files]` packs against the exe `profile:clean_rebuild` produces.
+
+   **The installer follows the app, never the reverse.** A value whose right answer the app already decides (the
+   version, the URL, an extension the app no longer opens, one list missing an entry the other two carry) is a
+   correction to the script. Claiming a type the app opens but the installer never registered is a product choice,
+   so it is a package. Bumping the version itself is the maintainer's.
 
 ## 10. UI drift, against the register
 **Last, and a LOOK rather than a measurement.** `profile:ui_register` is the authority; `none` → UNAVAILABLE, and
@@ -360,6 +372,10 @@ no branch.**
   build takes ~10 minutes here and nobody runs the exe mid-run; each step's `/wp-verify` still builds and tests
   its own commit. The report gives the final build's exit code and size. A run that ends early rebuilds after its
   last merge all the same.
+- **Then `profile:installer_command`, when necessary**: whenever that clean rebuild ran (the installer packs the
+  exe, so the old one ships the old app) or a merge of the run changed `profile:installer_script`. A run that merged
+  nothing rebuilds neither. The report gives its exit code and the installer's size; a compiler that is not there
+  is UNAVAILABLE with the exact command, and the report says the installer on disk is stale.
 - **Corrections travel in the step's own commits**; handed-over packages are roadmap rows on the step's branch;
   anything refused on evidence goes to `profile:settled_decisions`.
 
@@ -374,8 +390,8 @@ One message, at the end, in a fixed shape so two runs can be compared:
   measured**. Each says which it did: corrected (the commit), handed over (the roadmap row), refused on evidence
   (the settled entry), measured clean, not triggered, or UNAVAILABLE (the key or the instrument).
 - **What the maintainer has to do** — the rows needing a decision, each with its recommendation already written.
-- **What was left behind** — an unmerged branch, a step that ended the run early and why, the release build's exit
-  code and size.
+- **What was left behind** — an unmerged branch, a step that ended the run early and why, the release build's and
+  the installer's exit codes and sizes.
 
 **A recommendation is not permission**: nothing in the report is a request to act; it is a record of what was done
 and what is now the maintainer's.

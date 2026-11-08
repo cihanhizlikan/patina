@@ -70,6 +70,9 @@ that every path below still resolves.
 | `update_command` | `cargo update --dry-run` — semver-compatible updates only, nothing installed; LIVE 2026-11-08 |
 | `duplicates_command` | `cargo tree -d` — the same crate at two versions (`image` 0.24 under `rawler` beside 0.25 is known and deliberate) |
 | `clean_rebuild` | after every commit: `cargo clean`, then `cargo build --release --locked`; report the exit code and the size of `target\release\Patina.exe`. A sweep: once, after its last merge |
+| `installer_script` | `patina_setup.iss` (Inno Setup), the only build Patina ships |
+| `installer_formats_source` | `SUPPORTED_EXTENSIONS` in `src/loader.rs` — what the app opens |
+| `installer_command` | `& "C:\Program Files\Inno Setup 7\ISCC.exe" /Qp patina_setup.iss` from the repository root, after `clean_rebuild`; writes `Output\Patina_Setup.exe` (`/Output/` is gitignored). LIVE 2026-11-08 |
 | `push_policy` | a session pushes `main` only when the maintainer's request says so |
 
 ## The surfaces people read
