@@ -19,7 +19,7 @@ that every path below still resolves.
 |---|---|
 | `crate` | one binary crate, `Cargo.toml` (`patina`, exe `Patina.exe`), plus `build.rs` |
 | `production_sources` | `src/*.rs` outside `#[cfg(test)]` modules; `build.rs`; `src/assets/` (reached only through `include_bytes!`/`include_str!` paths) |
-| `test_sources` | the `#[cfg(test)] mod tests` (and `keyboard_tests`) inside each `src/*.rs`; there is no `tests/` directory |
+| `test_sources` | every `#[cfg(test)]` item inside `src/*.rs` — test modules, and single test-only helpers, some of them mid-file (derive with `#[cfg(test)]`, never by line); there is no `tests/` directory |
 | `fixture_excludes` | none |
 | `host_types` | a desktop eframe/egui app on wgpu; background work on `std::thread::spawn` threads that report over `crossbeam_channel`; a panic hook installed by `logging::init` that logs the panic before the default hook |
 | `co_located_products` | none |
