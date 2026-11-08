@@ -14,7 +14,8 @@ loader, navigator and path rules.
 - `src/nav.rs` — the sibling-file list for one directory, wraparound navigation.
 - `src/explorer_order.rs` — Explorer's sort order via `StrCmpLogicalW`; the one module allowed `unsafe`.
 - `src/exif.rs` — EXIF fields for the metadata panel. `src/xmp.rs` — rating and colour-label sidecars.
-- `src/orientation.rs` — saving a JPEG rotation or flip as its EXIF orientation, byte-exact otherwise.
+- `src/orientation.rs` — saving a JPEG rotation or flip as its EXIF orientation, byte-exact otherwise; and the
+  EXIF edits a re-encoded save makes (orientation reset, location stripped, pixel size set).
 - `src/save.rs` — every other save: re-encoding, with the source's EXIF, ICC profile and embedded XMP carried across.
 - `src/hud.rs` — the viewer's HUD, toast lane, loading bar, bad-file card and empty state.
 - `src/keymap.rs` — every keyboard shortcut, one table for the handler and the help.
