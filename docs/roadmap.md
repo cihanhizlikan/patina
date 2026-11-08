@@ -98,3 +98,12 @@ batch export (features, not UI refinements — revisit after 6–8 exist); slide
   backend change in a decoder; the sweep took only the four advisory and yanked fixes. *What would falsify it*:
   the 13 additions all being build-time or non-Windows. *Origin*: sweep 2026-11-08 step 3, not yet committed to
   build.
+- **Five functions are over clippy's length bar, one over its complexity bar.** *Where*:
+  `cargo clippy --all-targets -- -W clippy::too_many_lines -W clippy::cognitive_complexity` on 2026-11-08:
+  `draw_save_as_modal` (src/main.rs:2567, 216 lines), `draw_modal` (main.rs:2833, 177), `draw_help_modal`
+  (main.rs:2398, 107), `ui::slider` (src/ui.rs:981, 135), and `read_metadata_inner` (src/exif.rs:39, 142 lines,
+  complexity 26/25). *Why it is not the obvious thing*: the three modals are immediate-mode layout, where one long
+  function reads top to bottom as the dialog does, and splitting it threads `&mut App` and the response through
+  helpers; `read_metadata_inner` is a flat priority list of tags, long but linear. Whether to cut them, or to allow
+  each at its site with the reason, is a policy over sites. *What would falsify it*: a bug traced to one of them
+  that a split would have isolated. *Origin*: sweep 2026-11-08 step 7, not yet committed to build.
