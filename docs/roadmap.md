@@ -76,7 +76,7 @@ batch export (features, not UI refinements — revisit after 6–8 exist); slide
 ## From sweeps
 
 - **The user-file write layer is split across unrelated modules.** *Where*: `xmp::write_atomic`
-  (src/xmp.rs:306), called by save.rs:354 and orientation.rs:74; `rename_no_replace` (src/main.rs:3182), called
+  (src/xmp.rs:306), called by save.rs:354 and orientation.rs:74; `rename_no_replace` (src/main.rs:3193), called
   by xmp.rs:139. *Why it is not the obvious thing*: both are the primitives every write to the user's files goes
   through, but one lives in the sidecar module and one in the `App`; moving them to a module of their own
   (`fsio.rs`) is a structure decision, and the delete path (`trash`) might belong there too. *What would

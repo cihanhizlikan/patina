@@ -12,7 +12,7 @@
 //! ====================
 //! - Win32 hooks from the old winit build are removed; eframe handles window
 //!   management natively on each platform. Per-OS code is confined to two
-//!   pairs: xplorer_order (Explorer's sort) and logging::reveal_command.
+//!   pairs: `explorer_order` (Explorer's sort) and logging::reveal_command.
 //! - rfd (file dialogs) is cross-platform.
 //! - build.rs / winres embeds the Windows icon but is a no-op on Linux/macOS.
 
