@@ -1,12 +1,22 @@
 ; Patina — Inno Setup 7 installer script
 ; Place this file in the project root alongside Cargo.toml.
-; Build with: iscc patina_setup.iss
+; Build with: iscc patina_setup.iss, after cargo build --release
 ; Output: Output\Patina_Setup.exe
 
 #define AppName      "Patina"
-#define AppVersion   "0.1.0"
 #define AppPublisher "Fatih Cihan Hizlikan"
 #define AppExeName   "Patina.exe"
+#define AppExePath   AddBackslash(SourcePath) + "target\release\" + AppExeName
+
+; The version is read from the exe it packs, whose version block build.rs
+; stamps from Cargo.toml's package.version — one source, never typed here.
+#if !FileExists(AppExePath)
+  #error target\release\Patina.exe is missing: run cargo build --release first
+#endif
+#define AppVersion   GetStringFileInfo(AppExePath, "ProductVersion")
+#if AppVersion == ""
+  #error Patina.exe carries no ProductVersion: its version block was not embedded
+#endif
 #define AppId        "{{7A3E9F14-2C88-4D71-B5AC-8F3D92E74C01}"
 #define ProgId       "Patina.ImageFile"
 
@@ -14,6 +24,7 @@
 AppId={#AppId}
 AppName={#AppName}
 AppVersion={#AppVersion}
+VersionInfoVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 AppPublisherURL=https://github.com/cihanhizlikan/patina
 AppSupportURL=https://github.com/cihanhizlikan/patina

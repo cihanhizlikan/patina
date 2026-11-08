@@ -308,7 +308,9 @@ comment that STATES a number a tool computes is a cached derived value**: remove
    complained about last.
 4. **The installer** — `profile:installer_script`, the first thing a user runs. Whole tree every run, because it
    drifts by what changes AROUND it, not in it. Derive each against what decides it:
-   - its version against `Cargo.toml`'s `version` (the exe's version block comes from there);
+   - its version is READ from the exe it packs (`GetStringFileInfo`, whose version block `build.rs` stamps from
+     `Cargo.toml`), never typed: a literal `AppVersion` is drift, and the compiled installer's version is checked
+     against `Cargo.toml`'s;
    - every extension list it registers (Open With, Set as Default, the UserChoice cleanup) against
      `profile:installer_formats_source`, and against each other;
    - its URLs against `git remote get-url origin`;
