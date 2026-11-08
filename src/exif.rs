@@ -244,7 +244,10 @@ fn format_datetime(s: &str) -> String {
                 .unwrap_or(1)
                 .saturating_sub(1);
             let month = months.get(month_idx).copied().unwrap_or("?");
-            let time = &parts[1][..parts[1].len().min(5)]; // HH:MM
+            let time = parts[1]
+                .char_indices()
+                .nth(5)
+                .map_or(parts[1], |(i, _)| &parts[1][..i]); // HH:MM
             return format!("{} {} {}  {}", date_parts[2], month, date_parts[0], time);
         }
     }
@@ -291,4 +294,21 @@ fn read_gps_coord(exif: &exif::Exif, tag: exif::Tag, ref_tag: exif::Tag) -> Opti
         dd = -dd;
     }
     Some(dd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_capture_time_reads_day_month_year_and_minutes() {
+        assert_eq!(format_datetime("2024:06:15 14:23:01"), "15 Jun 2024  14:23");
+    }
+
+    /// The time is cut at five characters, not five bytes: a malformed
+    /// file's non-ASCII byte there must not split a character and panic.
+    #[test]
+    fn a_non_ascii_time_is_cut_at_a_character() {
+        assert_eq!(format_datetime("2024:06:15 12:3é:01"), "15 Jun 2024  12:3é");
+    }
 }
